@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     DATA_DIR=/var/tozyw-demo/data \
+    TOZYW_SEED_DATA_DIR=/var/tozyw-demo/data \
     TOZYW_RESULTS_URL=https://github.com/mahwoussa-boop/tozyw-northflank-demo/releases/download/untagged-f43ddbc5e81085288e0e/tozyw-results-complete.zip
 
 WORKDIR /app
@@ -24,4 +25,4 @@ USER tozyw
 EXPOSE 7860
 
 # Northflank supplies PORT. المنفذ 7860 هو البديل المحلي فقط.
-CMD ["sh", "-c", "streamlit run app.py --server.address=0.0.0.0 --server.port=${PORT:-7860} --server.headless=true --browser.gatherUsageStats=false"]
+CMD ["sh", "-c", "python runtime_data_bootstrap.py && exec streamlit run app.py --server.address=0.0.0.0 --server.port=${PORT:-7860} --server.headless=true --browser.gatherUsageStats=false"]
