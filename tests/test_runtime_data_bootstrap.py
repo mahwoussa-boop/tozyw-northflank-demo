@@ -223,6 +223,133 @@ def test_staging_stays_inside_data_dir(tmp_path, monkeypatch, quiet_views):
     assert not list((data_dir / boot._STAGING_DIR).iterdir()), "بقايا staging لم تُنظَّف"
 
 
+def _add_snapshot(archive: Path, *, frames: dict[str, int], separator: str = "/",
+                  omit_frame: str | None = None) -> None:
+    """ألحِق لقطة واجهة بأرشيف قائم — ``frames`` تربط اسم القسم بعدد صفوفه."""
+    meta = {
+        "__format__": 4,
+        "frames": {f"sections.{k}": f"pfx.sections.{k}.json" for k in frames},
+        "sections_other": {},
+        "analysis_results": {"class": "AnalysisResult", "data": {}},
+    }
+    with zipfile.ZipFile(archive, "a") as zf:
+        base = f"data{separator}ui_session{separator}"
+        zf.writestr(base + "_meta.json", json.dumps(meta))
+        for name, rows in frames.items():
+            if name == omit_frame:
+                continue
+            payload = {"columns": ["a"], "index": list(range(rows)),
+                       "data": [[i] for i in range(rows)]}
+            zf.writestr(f"{base}pfx.sections.{name}.json", json.dumps(payload))
+
+
+def test_shipped_snapshot_is_installed_verbatim(tmp_path, monkeypatch, quiet_views):
+    """اللقطة النهائية المحزومة تُنشر كما هي — لا إعادة بناء من الكاشات.
+
+    إعادة البناء تضع ~200 صفاً مُنقَذاً في «مستبعد» بدل «تحت المراجعة»، لأن
+    pricing_cache.json يُحفظ قبل الإنقاذ الحتمي.
+    """
+    url = _make_archive(tmp_path, "rev1")
+    archive = Path(tmp_path / "rev1.zip")
+    _add_snapshot(archive, frames={"review": 1724, "excluded": 2824})
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev1")
+    boot.main()
+
+    snapshot = data_dir / "ui_session"
+    assert (snapshot / "_meta.json").is_file()
+    review = json.loads((snapshot / "pfx.sections.review.json").read_text(encoding="utf-8"))
+    excluded = json.loads((snapshot / "pfx.sections.excluded.json").read_text(encoding="utf-8"))
+    assert len(review["index"]) == 1724
+    assert len(excluded["index"]) == 2824
+
+
+def test_shipped_snapshot_accepts_windows_separators(tmp_path, monkeypatch, quiet_views):
+    """الأرشيف يُبنى على ويندوز فمساراته ``data\\ui_session\\…`` — يجب أن تُقبل."""
+    url = _make_archive(tmp_path, "rev1")
+    _add_snapshot(Path(tmp_path / "rev1.zip"), frames={"review": 7}, separator="\\")
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev1")
+    boot.main()
+
+    assert (data_dir / "ui_session" / "_meta.json").is_file()
+    assert (data_dir / "ui_session" / "pfx.sections.review.json").is_file()
+
+
+def test_incomplete_shipped_snapshot_is_refused(tmp_path, monkeypatch, quiet_views):
+    """لقطة ينقصها إطار يسمّيه ``_meta.json`` لا تُنشر — لوحة ناقصة تبدو «أصغر» لا «معطوبة»."""
+    url = _make_archive(tmp_path, "rev1")
+    _add_snapshot(Path(tmp_path / "rev1.zip"),
+                  frames={"review": 5, "excluded": 5}, omit_frame="excluded")
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev1")
+    boot.main()
+
+    assert not (data_dir / "ui_session").exists(), "نُشرت لقطة ناقصة"
+    assert quiet_views == [data_dir], "لم يُطلب إعادة البناء كبديل"
+
+
+def test_previous_snapshot_is_archived_before_a_shipped_one_lands(
+    tmp_path, monkeypatch, quiet_views,
+):
+    url = _make_archive(tmp_path, "rev1")
+    _add_snapshot(Path(tmp_path / "rev1.zip"), frames={"review": 1})
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev1")
+    boot.main()
+
+    url2 = _make_archive(tmp_path, "rev2")
+    _add_snapshot(Path(tmp_path / "rev2.zip"), frames={"review": 2})
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url2)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev2")
+    boot.main()
+
+    current = json.loads(
+        (data_dir / "ui_session" / "pfx.sections.review.json").read_text(encoding="utf-8"))
+    assert len(current["index"]) == 2
+    archived = list((data_dir / "recovery_backups").glob("before-import-rev2-*/ui_session"))
+    assert archived, "لم تُؤرشف اللقطة السابقة"
+    previous = json.loads(
+        (archived[0] / "pfx.sections.review.json").read_text(encoding="utf-8"))
+    assert len(previous["index"]) == 1
+
+
+def test_snapshot_is_complete_rejects_broken_folders(tmp_path):
+    assert boot.snapshot_is_complete(tmp_path / "absent") is False
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert boot.snapshot_is_complete(empty) is False
+
+    bad_meta = tmp_path / "bad"
+    bad_meta.mkdir()
+    (bad_meta / "_meta.json").write_text("{not json", encoding="utf-8")
+    assert boot.snapshot_is_complete(bad_meta) is False
+
+    no_frames = tmp_path / "no_frames"
+    no_frames.mkdir()
+    (no_frames / "_meta.json").write_text(json.dumps({"frames": {}}), encoding="utf-8")
+    assert boot.snapshot_is_complete(no_frames) is False
+
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "_meta.json").write_text(
+        json.dumps({"frames": {"sections.review": "r.json"}}), encoding="utf-8")
+    (good / "r.json").write_text("{}", encoding="utf-8")
+    assert boot.snapshot_is_complete(good) is True
+
+
 def test_assert_writable_reports_a_readable_reason(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
