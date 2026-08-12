@@ -26,6 +26,8 @@ SEED_FILES = (
     "analysis_progress.json",
     "match_cache_v22.db",
 )
+_SEED_RUNTIME_FILES = ("competitors_list_v30.json",)
+_SNAPSHOT_META = Path("ui_session") / "_meta.json"
 _IMPORT_MARKER = ".tozyw_results_revision"
 
 
@@ -86,6 +88,43 @@ def restore_seed(seed_dir: Path, data_dir: Path) -> list[str]:
             copy_atomically(source, target)
             copied.append(f"{filename} ({target.stat().st_size} bytes)")
     return copied
+
+
+def restore_seed_runtime_views(seed_dir: Path, data_dir: Path) -> list[str]:
+    """Copy derived UI assets prepared during image build when the volume lacks them.
+
+    This keeps normal pod startup within the service memory limit. The expensive
+    DataFrame reconstruction remains available only for an explicit new archive
+    import, where a revision marker guarantees that it runs once.
+    """
+    copied: list[str] = []
+    for filename in _SEED_RUNTIME_FILES:
+        source = seed_dir / filename
+        target = data_dir / filename
+        if source.is_file() and not target.exists():
+            copy_atomically(source, target)
+            copied.append(filename)
+
+    source_snapshot = seed_dir / "ui_session"
+    target_snapshot = data_dir / "ui_session"
+    if source_snapshot.is_dir() and not target_snapshot.exists():
+        temporary = data_dir / ".ui_session.partial"
+        shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            shutil.copytree(source_snapshot, temporary)
+            temporary.replace(target_snapshot)
+            copied.append("ui_session/")
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+    return copied
+
+
+def runtime_views_ready(data_dir: Path) -> bool:
+    """Return whether the persistent volume already has both derived UI assets."""
+    return (
+        (data_dir / "competitors_list_v30.json").is_file()
+        and (data_dir / _SNAPSHOT_META).is_file()
+    )
 
 
 def _archive_members(archive: zipfile.ZipFile) -> dict[str, str]:
@@ -197,9 +236,20 @@ def main() -> None:
         backup_note = f"; backed up incomplete files to {backup_dir}" if backup_dir else ""
         print("restored persistent data snapshot: " + ", ".join(copied) + backup_note)
 
+    seeded_views = restore_seed_runtime_views(seed_dir, data_dir)
+    if seeded_views:
+        print("restored prepared runtime views: " + ", ".join(seeded_views))
+
     imported = import_requested_results(data_dir)
-    if not imported:
-        sync_runtime_views(data_dir)
+    if imported:
+        return
+    if runtime_views_ready(data_dir):
+        print("reused prepared runtime views from persistent data")
+        return
+
+    # Compatibility fallback for a legacy volume without prepared views. This
+    # path may be expensive and should run only once; new images seed the views.
+    sync_runtime_views(data_dir)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ def main() -> None:
     data_dir = Path(sys.argv[1])
     url = sys.argv[2]
     data_dir.mkdir(parents=True, exist_ok=True)
+
     with tempfile.TemporaryDirectory() as td:
         archive = Path(td) / "tozyw-results-complete.zip"
         urllib.request.urlretrieve(url, archive)
@@ -38,6 +39,16 @@ def main() -> None:
                     while chunk := src.read(1024 * 1024):
                         dst.write(chunk)
                 print(f"restored {target} ({target.stat().st_size} bytes)")
+
+    # تحضير العروض المشتقة مرة واحدة أثناء البناء (16GB)، لا عند أول تشغيل
+    # للخدمة ذات الذاكرة الأصغر. فشل هنا أفضل من نشر صورة بلا لقطة واجهة.
+    from restore_ui_snapshot import restore_snapshot
+    from sync_competitor_list import sync_competitor_list
+
+    competitor_info = sync_competitor_list(data_dir)
+    snapshot_info = restore_snapshot(data_dir)
+    print(f"seed competitor list: {competitor_info}")
+    print(f"seed UI snapshot: {snapshot_info}")
 
 
 if __name__ == "__main__":
