@@ -11,6 +11,7 @@ slim image on an empty volume impossible to boot — the import was never reache
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -165,6 +166,69 @@ def runtime_views_ready(data_dir: Path) -> bool:
     )
 
 
+def snapshot_is_complete(snapshot_dir: Path) -> bool:
+    """Return whether a snapshot folder has a readable meta and every frame it names.
+
+    A half-extracted snapshot must never replace a working one: the dashboard would
+    restore with sections missing and look merely "smaller" instead of broken.
+    """
+    meta_path = snapshot_dir / "_meta.json"
+    if not meta_path.is_file():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    frames = meta.get("frames")
+    if not isinstance(frames, dict) or not frames:
+        return False
+    return all((snapshot_dir / str(name)).is_file() for name in frames.values())
+
+
+def install_shipped_snapshot(stage_dir: Path, data_dir: Path) -> bool:
+    """Move a validated ``ui_session/`` shipped inside the archive into place.
+
+    The archive's snapshot is the *final* one the analysis saved, after deterministic
+    salvage moved rows out of ``excluded``.  Rebuilding it from ``pricing_cache.json``
+    cannot reproduce that: the cache is written in ``bootstrap.run_pricing_analysis``
+    before salvage runs in ``analysis_runner``, so a rebuild lands ~200 salvaged rows
+    in the wrong section.  Re-running salvage here is not an option either — it took
+    526s and loads a 300k-row pool.  Shipping the verified snapshot sidesteps both.
+    """
+    staged = stage_dir / "ui_session"
+    if not snapshot_is_complete(staged):
+        return False
+    target = data_dir / "ui_session"
+    shutil.rmtree(target, ignore_errors=True)  # المُستبدَل مؤرشف قبل هذا النداء
+    staged.replace(target)
+    return True
+
+
+def _extract_shipped_snapshot(archive: zipfile.ZipFile, stage_dir: Path) -> int:
+    """Extract a ``ui_session/`` tree from the archive, accepting Windows separators.
+
+    Names are flattened onto one folder deliberately: ``_meta.json`` addresses its
+    frames by bare filename, exactly as ``state_manager`` writes them.
+    """
+    target_dir = stage_dir / "ui_session"
+    written = 0
+    for member in archive.namelist():
+        normalized = member.replace("\\", "/")
+        if normalized.endswith("/"):
+            continue
+        parts = normalized.split("/")
+        if "ui_session" not in parts[:-1]:
+            continue
+        name = parts[-1]
+        if not name or name == ".." :
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as src, (target_dir / name).open("wb") as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        written += 1
+    return written
+
+
 def _archive_members(archive: zipfile.ZipFile) -> dict[str, str]:
     """Map basename to archive member, accepting Windows and POSIX separators."""
     members: dict[str, str] = {}
@@ -197,6 +261,7 @@ def stage_remote_archive(url: str, stage_dir: Path) -> list[str]:
             with archive.open(member) as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
             extracted.append(filename)
+        _extract_shipped_snapshot(archive, stage_dir)
     return extracted
 
 
@@ -256,8 +321,12 @@ def import_requested_results(data_dir: Path) -> bool:
         data_backup = backup_incomplete_data(data_dir)
         for filename in extracted:
             move_into_place(stage_dir / filename, data_dir / filename)
+        # Both of these must happen before the staging folder is removed on exit.
+        ui_backup = archive_ui_snapshot(data_dir, revision)
+        shipped = install_shipped_snapshot(stage_dir, data_dir)
 
-    ui_backup = archive_ui_snapshot(data_dir, revision)
+    # With a shipped snapshot in place ``restore_snapshot`` reports "exists" and
+    # leaves it untouched; only an archive without one pays for a rebuild.
     sync_runtime_views(data_dir)
     temporary_marker = marker.with_name(f".{marker.name}.partial")
     temporary_marker.write_text(revision + "\n", encoding="utf-8")
@@ -265,7 +334,8 @@ def import_requested_results(data_dir: Path) -> bool:
     print(
         f"imported requested results revision {revision}; "
         f"files={','.join(extracted)}; previous_data={data_backup}; "
-        f"previous_ui_snapshot={ui_backup}"
+        f"previous_ui_snapshot={ui_backup}; "
+        f"snapshot_source={'archive' if shipped else 'rebuilt from caches'}"
     )
     return True
 
