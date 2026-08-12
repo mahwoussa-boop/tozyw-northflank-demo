@@ -143,6 +143,30 @@ def test_restore_stamps_fingerprints_so_first_click_is_cheap(snap, monkeypatch):
     assert written == ["_meta.json"], f"أُعيدت كتابة إطارات بلا تغيير: {written}"
 
 
+def test_lazy_restore_defers_frames_and_preserves_all_on_save(snap):
+    """الواجهة تفتح بخفة، لكن أي حفظ لاحق لا يحذف إطاراً لم يُفتح بعد."""
+    _state().persist_results()
+
+    fresh = AppState()
+    assert fresh.restore_results(eager=False) is True
+    assert fresh.sections == {}
+    assert fresh.our_catalog is None
+    assert fresh.snapshot_frames_fully_loaded is False
+
+    assert fresh.load_snapshot_frames({"sections.review"}) is True
+    assert sorted(fresh.sections) == ["review"]
+    assert fresh.sections["review"]["المنتج"].tolist() == ["ب"]
+    assert fresh.snapshot_frames_fully_loaded is False
+
+    # الحفظ يحمّل الباقي أولاً، فلا يفسر الملفات غير المفتوحة كأقسام محذوفة.
+    assert fresh.persist_results() is True
+    again = AppState()
+    assert again.restore_results() is True
+    assert sorted(again.sections) == ["price_raise", "review"]
+    assert again.our_catalog["المنتج"].tolist() == ["أ", "ب"]
+    assert again.missing_df["منتج_المنافس"].tolist() == ["ج"]
+
+
 def test_meta_written_last_lists_only_existing_frames(snap):
     state = _state()
     state.persist_results()

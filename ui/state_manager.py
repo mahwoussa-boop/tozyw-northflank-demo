@@ -281,6 +281,17 @@ class AppState:
     _frame_fp: dict[str, tuple] = field(
         default_factory=dict, init=False, repr=False, compare=False,
     )
+    # فهرس اللقطة المقسّمة، لا بياناتها. يُبقي أول رسم للوحة خفيفاً: ملفات
+    # الأقسام الكبيرة لا تُفك إلى DataFrame قبل أن يفتح المستخدم القسم المحتاج.
+    _snapshot_frames: dict[str, str] = field(
+        default_factory=dict, init=False, repr=False, compare=False,
+    )
+    _loaded_snapshot_frames: set[str] = field(
+        default_factory=set, init=False, repr=False, compare=False,
+    )
+    _snapshot_restored: bool = field(
+        default=False, init=False, repr=False, compare=False,
+    )
 
     # ── الحذف الناعم (مفاتيح مستقرّة) ──
     def hide(self, product_name: str) -> None:
@@ -365,6 +376,16 @@ class AppState:
         الصيغة القديمة). كل ملف يُكتب ذرّياً، و``_meta.json`` يُكتب **أخيراً** فلا
         يُعلَن إطار قبل أن يوجد ملفّه. يُرجع True عند نجاح الكتابة.
         """
+        # قد تكون الجلسة استُعيدت بخفة للوحة التحكم. قبل أي كتابة نحمّل كل
+        # الإطارات المرجعية أولاً؛ وإلا لحذف ``_prune_stale_frames`` بيانات أقسام
+        # لم تُفتح بعد. هذا الحمل يقع فقط عند إجراء يغيّر البيانات، لا عند العرض.
+        if self._snapshot_frames:
+            self.load_snapshot_frames()
+            # لا نكتب meta جديدة ولا ننظف ملفات قديمة إلا حين صارت الذاكرة تحوي
+            # كل الإطارات المرجعية. فملف تالف/مفقود يجب أن يوقف الحفظ بأمان، لا أن
+            # يجعل pruning يفسره كقسم حُذف عمداً.
+            if not self.snapshot_frames_fully_loaded:
+                return False
         if not self.sections:
             return False
         # تخسيس اللقطة: عمودا الوصف («الوصف» ~95MB، «وصف صفحة المنتج» ~73MB —
@@ -423,6 +444,9 @@ class AppState:
                 json.dumps(meta, ensure_ascii=False),
             )
             self._prune_stale_frames(dirpath, set(files.values()))
+            self._snapshot_frames = dict(files)
+            self._loaded_snapshot_frames = set(files)
+            self._snapshot_restored = True
             return True
         except Exception:
             import logging
@@ -444,24 +468,71 @@ class AppState:
                 except OSError:
                     pass
 
-    def restore_results(self) -> bool:
-        """يستعيد آخر نتائج محفوظة من القرص إن خلت الجلسة منها. يُرجع True عند الاستعادة.
+    def restore_results(self, *, eager: bool = True) -> bool:
+        """يستعيد آخر نتائج محفوظة من القرص إن خلت الجلسة منها.
 
-        يقرأ صيغة 3 (المجلّد) أولاً؛ فإن غابت قرأ الملف الواحد القديم و**رحّل**
-        اللقطة تلقائياً إلى الصيغة الجديدة — فلا يفقد المالك تحليله عند الترقية.
+        ``eager=False`` يقرأ وصف اللقطة والنتيجة والقرارات فقط، ويؤجل فك
+        DataFrame الكبيرة إلى ``load_snapshot_frames``. هذا مسار واجهة Streamlit
+        الأول؛ أما مشغلات الخلفية وأدوات الصيانة فتبقى eager افتراضياً كما كانت.
         """
-        if self.sections:
+        if self._snapshot_restored or self.sections:
             return False
-        if self._restore_v3():
+        if self._restore_v3(eager=eager):
+            self._snapshot_restored = True
             return True
         if self._restore_legacy():
             self.persist_results(full=True)
             self._retire_legacy_file()
+            self._snapshot_restored = True
             return True
         return False
 
-    def _restore_v3(self) -> bool:
-        """يقرأ صيغة المجلّد (ملف لكل إطار). يعيد False إن غابت أو تعذّرت."""
+    @property
+    def snapshot_frames_fully_loaded(self) -> bool:
+        """هل كل إطارات صيغة 3 الموجودة على القرص مفكوكة في هذه الجلسة؟"""
+        return (not self._snapshot_frames
+                or set(self._snapshot_frames).issubset(self._loaded_snapshot_frames))
+
+    def load_snapshot_frames(self, keys: Optional[set[str]] = None) -> bool:
+        """يفك إطارات محددة من اللقطة المقسّمة عند الحاجة.
+
+        ``keys=None`` يعني كل الإطارات. لا يكتب إلى القرص ولا يحذف شيئاً؛ أي
+        فشل في إطار واحد يُترك للصفحة كحالة بيانات ناقصة بدلاً من إفساد اللقطة.
+        """
+        if not self._snapshot_frames:
+            return False
+        wanted = set(self._snapshot_frames) if keys is None else set(keys)
+        dirpath = _snapshot_dir()
+        loaded_any = False
+        for key in wanted:
+            if key in self._loaded_snapshot_frames:
+                continue
+            fname = self._snapshot_frames.get(key)
+            if not fname:
+                continue
+            fpath = os.path.join(dirpath, str(fname))
+            if not os.path.exists(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8") as handle:
+                    frame = pd.read_json(io.StringIO(handle.read()), orient="split")
+            except Exception:
+                continue
+            if key == "our_catalog":
+                self.our_catalog = frame
+            elif key == "missing_df":
+                self.missing_df = frame
+            elif key.startswith("sections."):
+                self.sections[key[len("sections."):]] = frame
+            else:
+                continue
+            self._loaded_snapshot_frames.add(key)
+            self._frame_fp[key] = _frame_fingerprint(frame)
+            loaded_any = True
+        return loaded_any
+
+    def _restore_v3(self, *, eager: bool = True) -> bool:
+        """يقرأ وصف صيغة المجلّد ثم يفك الإطارات عند الطلب أو فوراً."""
         dirpath = _snapshot_dir()
         meta_path = os.path.join(dirpath, _META_NAME)
         if not os.path.exists(meta_path):
@@ -469,27 +540,16 @@ class AppState:
         try:
             with open(meta_path, "r", encoding="utf-8") as handle:
                 meta = json.load(handle)
-            files = meta.get("frames") or {}
-            loaded: dict[str, pd.DataFrame] = {}
-            for key, fname in files.items():
-                fpath = os.path.join(dirpath, str(fname))
-                if not os.path.exists(fpath):
-                    continue
-                with open(fpath, "r", encoding="utf-8") as handle:
-                    loaded[key] = pd.read_json(
-                        io.StringIO(handle.read()), orient="split",
-                    )
-            sections: dict[str, Any] = {
-                key[len("sections."):]: frame
-                for key, frame in loaded.items() if key.startswith("sections.")
+            files = {
+                str(key): str(fname) for key, fname in (meta.get("frames") or {}).items()
             }
-            sections.update(meta.get("sections_other") or {})
-            if not sections:
+            has_sections = any(key.startswith("sections.") for key in files)
+            if not has_sections and not (meta.get("sections_other") or {}):
                 return False
 
-            self.our_catalog = loaded.get("our_catalog")
-            self.missing_df = loaded.get("missing_df")
-            self.sections = sections
+            self._snapshot_frames = files
+            self._loaded_snapshot_frames = set()
+            self.sections = dict(meta.get("sections_other") or {})
             ar = meta.get("analysis_results")
             self.analysis_results = None
             if isinstance(ar, dict):
@@ -505,12 +565,10 @@ class AppState:
             }
             self.hidden_products = set(meta.get("hidden_products") or [])
             self.processed_log = list(meta.get("processed_log") or [])
-            # ما على القرص يطابق ما في الذاكرة الآن ⇒ ابصمه كي لا تُعيد أوّلُ
-            # نقرةٍ كتابةَ كل الإطارات بلا سبب.
-            self._frame_fp = {
-                key: _frame_fingerprint(frame) for key, frame in loaded.items()
-            }
-            self._reconcile_section_counts()
+            if eager:
+                self.load_snapshot_frames()
+                # نحافظ على السلوك التاريخي لأدوات الخلفية/الترحيل eager.
+                self._reconcile_section_counts()
             return True
         except Exception:
             return False
@@ -594,6 +652,12 @@ class AppState:
         # كائن حالة نجا في الجلسة من نسخة كود أقدم لا يحمل هذا الحقل.
         if not isinstance(getattr(self, "_frame_fp", None), dict):
             self._frame_fp = {}
+        if not isinstance(getattr(self, "_snapshot_frames", None), dict):
+            self._snapshot_frames = {}
+        if not isinstance(getattr(self, "_loaded_snapshot_frames", None), set):
+            self._loaded_snapshot_frames = set()
+        if not isinstance(getattr(self, "_snapshot_restored", None), bool):
+            self._snapshot_restored = False
         self.hidden_products = set(self.hidden_products or set())
         self.processed_price_skus = set(self.processed_price_skus or set())
         # تنظيف الروابط الملوّثة من حالة قديمة ("nan"/""/...) — تُخفي كل المفقودات.
