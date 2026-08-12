@@ -1068,12 +1068,25 @@ def render(state: AppState, *, on_analyze: Optional[Callable[..., Any]] = None) 
 
     render_page_header("لوحة التحكم", section="dashboard")
     _render_upload(state, on_analyze)
-    _render_quality_report(state)
     _render_summary(state)
     _render_banner(state)
     _render_quick_actions(state)
-    _render_quick_stats(state)
     _render_kpis(state)
+
+    # عند الجلسة الجديدة تكون اللقطة مستعادة بخفة: نعرض ملخصاً دقيقاً من
+    # AnalysisResult ونؤجل فك DataFrame الكبيرة ومسوح SQLite إلى أن يفتح المستخدم
+    # القسم المختص. كان تنفيذ هذه البطاقات كلها مع الاستعادة الكاملة يكسر حاوية 1GiB.
+    if not state.snapshot_frames_fully_loaded:
+        import streamlit as st
+        st.caption(
+            "تُحمَّل التفاصيل الثقيلة عند فتح قسمها لحماية استقرار لوحة التحكم؛ "
+            "كل النتائج المحفوظة تبقى متاحة من القائمة الجانبية."
+        )
+        _render_recent_activity(state)
+        return
+
+    _render_quality_report(state)
+    _render_quick_stats(state)
     _render_urgent(state)
     _render_urgent_stockouts(state)
     _render_market_digest(state)

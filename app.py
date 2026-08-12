@@ -275,6 +275,32 @@ PAGES: dict[str, Callable[[AppState, StateStore, Container], None]] = {
 
 _NAV_KEY = "nav_page"  # مفتاح ربط الراديو بـ session_state
 
+# إطارات اللقطة اللازمة فقط لصفحات النتائج. منع فك اللقطة كلها عند فتح لوحة
+# التحكم يزيل ذروة الذاكرة التي سببت OOM في حاوية 1 GiB، بينما تبقى كل البيانات
+# على `/data` وتُحمّل فور طلب القسم المعني.
+_PAGE_SNAPSHOT_FRAMES: dict[str, set[str]] = {
+    "🔴 سعر أعلى": {"sections.price_raise"},
+    "🟢 سعر أقل": {"sections.price_lower"},
+    "✅ موافق عليها": {"sections.approved"},
+    "🔍 منتجات مفقودة": {"missing_df"},
+    "⚠️ تحت المراجعة": {"sections.review"},
+    "⚪ مستبعد": {"sections.excluded"},
+}
+_LIGHTWEIGHT_SNAPSHOT_PAGES = frozenset({
+    "📊 لوحة التحكم", "🆕 جديد عند المنافسين", "✅ تمت المعالجة",
+    "🕷️ كشط المنافسين", "⚙️ الإعدادات", "🗑️ سلة المحذوفات",
+})
+
+
+def _hydrate_snapshot_for_page(state: AppState, page: str) -> None:
+    """يفك أقل جزء من اللقطة يلزم للصفحة الحالية، بلا كتابة إلى القرص."""
+    keys = _PAGE_SNAPSHOT_FRAMES.get(page)
+    if keys:
+        state.load_snapshot_frames(keys)
+    elif page not in _LIGHTWEIGHT_SNAPSHOT_PAGES:
+        # صفحات الأتمتة/إعادة التوزيع والرادار تحتاج سياق التحليل كاملاً.
+        state.load_snapshot_frames()
+
 
 def _sync_nav() -> None:
     """on_change callback: يمزامن اختيار القائمة مع AppState فوراً *قبل* Rerun."""
@@ -331,22 +357,16 @@ def main() -> None:
     store = StreamlitStore()
     state = AppState.load(store)
     with st.spinner("⏳ جارٍ تحميل آخر نتائج محفوظة..."):
-        restored = state.restore_results()  # استعادة آخر تحليل محفوظ عند أول إقلاع للجلسة
+        # الاستعادة الخفيفة تقرأ وصف النتيجة والقرارات فقط. لا نفك جميع JSON
+        # DataFrame في كل جلسة؛ تحميلها الكامل كان يستهلك ذاكرة الحاوية قبل أن
+        # يختار المستخدم أي قسم.
+        restored = state.restore_results(eager=False)
     if restored:
-        reconcile_state(state)  # طبّق مطابقة الفحص على اللقطة المُستعادة (idempotent)
-        # مرجع فحص الماركات من الكتالوج المُستعاد (يُصحّح الفحص فوراً بلا إعادة تحليل)
-        try:
-            from services.brand_manager import save_store_brands
-            save_store_brands(state.our_catalog)
-        except Exception as exc:
-            import logging
-            logging.getLogger("app").debug(
-                "تعذّر تحديث مرجع الماركات على الاستعادة: %s", exc,
-            )
         state.save(store)
     container = _container()
     choice = _sidebar(state, container)
     state.current_page = choice
+    _hydrate_snapshot_for_page(state, choice)
     PAGES[choice](state, store, container)
     state.save(store)
 

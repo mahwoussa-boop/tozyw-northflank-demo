@@ -110,15 +110,16 @@ def get_db():
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=30000;")  # 30 ثانية انتظار بدل الخطأ الفوري
-    # ⚡ ضبط أداء لكل اتصال (آمن تماماً — إعدادات اتصال محلية، لا تغيّر البيانات):
-    #   • cache_size سالب = حجم بالكيلوبايت → 64MB صفحات مخبّأة بدل ~2MB الافتراضي
-    #   • mmap_size = قراءة عبر الذاكرة (I/O أسرع للقاعدة الكبيرة 220MB)
-    #   • temp_store=MEMORY = جداول الفرز/التجميع المؤقتة في الذاكرة (GROUP BY/ORDER BY أسرع)
+    # ذاكرة الحاوية في Northflank هي 1 GiB، وواجهة Streamlit قد تفتح أكثر من
+    # اتصال عند العرض. الإعدادات القديمة (64 MiB cache + 256 MiB mmap + temp في
+    # الذاكرة لكل اتصال) تضاعف الذاكرة المقيمة وتؤدي إلى OOM رغم أن البيانات سليمة.
+    # نفضّل الآن مساحة القرص الدائم للملفات المؤقتة وذاكرة cache متحفظة؛ WAL والمهلة
+    # يبقيان القراءة/الكتابة المتزامنة آمنة ولا يتغير أي محتوى في SQLite.
     # كل واحدة داخل try مستقل: لو فشلت أي PRAGMA (نظام قديم) يبقى الاتصال صالحاً.
     for _pragma in (
-        "PRAGMA cache_size=-65536;",
-        "PRAGMA mmap_size=268435456;",
-        "PRAGMA temp_store=MEMORY;",
+        "PRAGMA cache_size=-16384;",  # 16 MiB لكل اتصال بدلاً من 64 MiB
+        "PRAGMA mmap_size=0;",        # لا حجز map واسع لكل عملية/جلسة
+        "PRAGMA temp_store=FILE;",    # sort/group ينساب للقرص بدلاً من RAM
     ):
         try:
             conn.execute(_pragma)
