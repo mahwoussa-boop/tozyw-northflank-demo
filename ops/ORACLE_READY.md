@@ -31,6 +31,10 @@ sudo OPS_ROOT="$PWD" ./scripts/bootstrap_host.sh
 | `/etc/tozyw/backup.env` | مسار قواعد SQLite ووجهة `rclone crypt` وكلمة حماية إعداد rclone. |
 | `/etc/tozyw/release.env` | رابط المستودع الخاص ومسارات التطبيق والبيانات. |
 
+## وصول الخادم إلى المستودع
+
+أنشئ مفتاح SSH مستقل على الخادم لمستخدم النشر، ثم أضفه إلى المستودع الخاص كمفتاح نشر **read-only**. استخدم رابط SSH في `TOZYW_REPOSITORY_URL` ضمن `/etc/tozyw/release.env`. يبقى مفتاح النشر على الخادم فقط؛ لا تضعه في GitHub Actions أو في Git أو ضمن ملفات التطبيق.
+
 ## النسخ الاحتياطي
 
 أنشئ remote تخزين أساسي ثم remote من نوع `crypt` يلتف حول مسار مخصص له. افحص نسخة تجريبية قبل الاعتماد على الجدولة:
