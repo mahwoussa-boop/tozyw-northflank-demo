@@ -97,6 +97,17 @@ def test_warmup_is_disabled_under_pytest():
     assert warmup.start_background_warmup() is False
 
 
+def test_warmup_is_disabled_by_default(monkeypatch):
+    """في النشر الضيق لا يبدأ بناء المطابِق إلا بطلب صريح."""
+    monkeypatch.delenv("MAHWOUS_WARMUP", raising=False)
+    monkeypatch.delitem(sys.modules, "pytest", raising=False)
+    try:
+        assert warmup.start_background_warmup() is False
+        assert warmup._started is False
+    finally:
+        sys.modules["pytest"] = pytest
+
+
 def test_warmup_respects_kill_switch(monkeypatch):
     monkeypatch.setenv("MAHWOUS_WARMUP", "0")
     monkeypatch.delitem(sys.modules, "pytest", raising=False)
@@ -108,6 +119,7 @@ def test_warmup_respects_kill_switch(monkeypatch):
 
 def test_warmup_starts_once_per_process(monkeypatch):
     started: list = []
+    monkeypatch.setenv("MAHWOUS_WARMUP", "1")
     monkeypatch.delitem(sys.modules, "pytest", raising=False)
 
     class _FakeTimer:
