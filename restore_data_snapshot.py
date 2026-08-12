@@ -29,7 +29,8 @@ def main() -> None:
         archive = Path(td) / "tozyw-results-complete.zip"
         urllib.request.urlretrieve(url, archive)
         with zipfile.ZipFile(archive) as zf:
-            members = {Path(name).name: name for name in zf.namelist()}
+            # الأرشيف الفعلي كُتب بمسارات Windows؛ طبعها إلى POSIX قبل استخراج الاسم.
+            members = {Path(name.replace("\\", "/")).name: name for name in zf.namelist()}
             for filename in FILES:
                 member = members.get(filename)
                 if member is None:
