@@ -48,10 +48,12 @@ try:
 except Exception:
     pass
 
-# ── ثوابت Algolia (مفتاح بحث عام مضمّن بالموقع — احتياطي) ────────────────────
-APP_ID = os.environ.get("ALGOLIA_APP_ID") or "L41Y35UONW"
-API_KEY = os.environ.get("ALGOLIA_API_KEY") or "f60e98a284e4b402af626d0dd1fc6cbd"
+# ── إعدادات Algolia: تُحقن من متغيرات بيئية سرية ولا تُضمّن في المصدر ─────────
+APP_ID = os.environ.get("ALGOLIA_APP_ID", "").strip()
+API_KEY = os.environ.get("ALGOLIA_API_KEY", "").strip()
 INDEX = os.environ.get("MAHALLY_INDEX", "products_v2")
+if not APP_ID or not API_KEY:
+    raise RuntimeError("ALGOLIA_APP_ID and ALGOLIA_API_KEY must be configured as secrets")
 
 # بروكسي محلي أولاً ثم نقطة Algolia المباشرة كاحتياطي
 ENDPOINTS = [
