@@ -310,6 +310,13 @@ def load_competitor_dfs(db_path: str) -> dict[str, pd.DataFrame]:
     }
     conn = sqlite3.connect(db_path)
     try:
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            ("competitor_products_store",),
+        ).fetchone() is not None
+        if not table_exists:
+            logger.warning("competitor_products_store is missing; returning an empty competitor catalog")
+            return {}
         existing = {
             row[1]
             for row in conn.execute("PRAGMA table_info(competitor_products_store)")
