@@ -70,3 +70,7 @@ git push
 [1] [Oracle Cloud — موارد Always Free](https://docs.oracle.com/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
 
 [2] [GitHub — حماية الأسرار في Actions](https://docs.github.com/actions/security-guides/using-secrets-in-github-actions)
+
+## حالة التسجيل الحالية
+
+في 12 أغسطس 2026، أفادت بوابة Oracle بأن رابط التحقق السابق من البريد الإلكتروني **منتهي الصلاحية أو مستخدم مسبقاً**، وأن معلومات التسجيل السابقة مُسحت. لا يُخزن هذا المستودع رابط التحقق أو أي بيانات شخصية. يلزم طلب رابط تحقق جديد وإتمام التسجيل من قبل مالك الحساب قبل إنشاء موارد Oracle.
