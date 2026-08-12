@@ -6,8 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     DATA_DIR=/var/tozyw-demo/data \
-    TOZYW_DATA_URL=https://github.com/mahwoussa-boop/tozyw-northflank-demo/releases/download/untagged-f43ddbc5e81085288e0e/pricing_v18.db.zip \
-    TOZYW_PERFUME_URL=https://github.com/mahwoussa-boop/tozyw-northflank-demo/releases/download/untagged-f43ddbc5e81085288e0e/perfume_pricing.db.zip
+    TOZYW_RESULTS_URL=https://github.com/mahwoussa-boop/tozyw-northflank-demo/releases/download/untagged-f43ddbc5e81085288e0e/tozyw-results-complete.zip
 
 WORKDIR /app
 
@@ -18,7 +17,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY --chown=tozyw:tozyw . .
 RUN mkdir -p "$DATA_DIR" \
-    && python restore_data_snapshot.py "$DATA_DIR" "$TOZYW_DATA_URL" "$TOZYW_PERFUME_URL" \
+    && python restore_data_snapshot.py "$DATA_DIR" "$TOZYW_RESULTS_URL" \
     && chown -R tozyw:tozyw /app /var/tozyw-demo
 
 USER tozyw
