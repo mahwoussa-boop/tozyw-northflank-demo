@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     DATA_DIR=/var/tozyw-demo/data \
     TOZYW_SEED_DATA_DIR=/var/tozyw-demo/data \
-    TOZYW_RESULTS_URL=https://github.com/mahwoussa-boop/tozyw-northflank-demo/releases/download/untagged-f43ddbc5e81085288e0e/tozyw-results-complete.zip
+    TOZYW_RESULTS_URL=https://github.com/mahwoussa-boop/tozyw-northflank-demo/releases/download/data-20260812/tozyw-results-complete.zip
 
 WORKDIR /app
 
