@@ -185,7 +185,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Rebuild UI snapshot from analysis caches")
     parser.add_argument(
         "--data-dir",
-        default=os.environ.get("DATA_DIR", "/var/tozyw-demo/data"),
+        default=os.environ.get("DATA_DIR", "/data"),
         help="Directory containing analysis cache files",
     )
     args = parser.parse_args()
