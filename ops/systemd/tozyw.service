@@ -1,0 +1,34 @@
+[Unit]
+Description=Tozyw Streamlit pricing application
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tozyw
+Group=tozyw
+WorkingDirectory=/opt/tozyw/current
+EnvironmentFile=/etc/tozyw/app.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/srv/tozyw
+ExecStart=/opt/tozyw/current/.venv/bin/streamlit run app.py --server.address=127.0.0.1 --server.port=8502 --server.headless=true
+Restart=on-failure
+RestartSec=8
+TimeoutStartSec=90
+TimeoutStopSec=30
+LimitNOFILE=4096
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/tozyw/data /srv/tozyw/.cache /var/log/tozyw
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

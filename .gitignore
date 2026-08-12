@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local Claude permissions and machine-specific settings
+.claude/settings.local.json
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables (الأسرار: متغيّرات بيئة/أسرار Railway — لا تُلتزَم أبداً)
+.env
+.env.local
+
+# أسرار Streamlit المحلية (المفاتيح) — لا تُرفع أبداً؛ القالب .example فقط يُلتزَم
+.streamlit/secrets.toml
+
+# البيانات والكاشات (تقيم على Railway Volume — لا تُلتزَم في git)
+# القاعدة 263MB + الكاشات الدافئة تُرفع للـVolume مرة واحدة، لا عبر المستودع.
+data/*
+!data/competitors_list_v30.json
+*.db
+*.pkl
+
+# أدوات فحص محلية مؤقتة
+_cleanvenv/
+_clean_import_test.py
+
+# حطام 0-بايت بأسماء «قيمة» في جذر المستودع فقط: None + أرقام مجرّدة (str(None)/عدّاد).
+# وقاية رخيصة تمنع تلويث git status؛ لا تعالج السبب — الكاتب لم يُحسم (البوّابة بريئة بالدليل).
+# التشخيص الكامل: memory/parallel-agent-debris. مثبّتة بالجذر (/) فلا تمسّ أسماءً رقمية في مجلدات فرعية.
+/None
+/[0-9]
+/[0-9][0-9]
+/[0-9][0-9][0-9]
+/[0-9][0-9][0-9][0-9]
+/[0-9][0-9][0-9][0-9][0-9]
+
+# حطام الجولة 2 (نفس السبب المجهول، جذر المستودع فقط): أجزاء type-hints/f-strings مقطوعة
+# تسرّبت كأسماء ملفات عبر عدة worktrees وجلسات (رُصدت فعلياً: bool, dict[str, taxonomy-leaf,
+# {len(rep)}, 70%). لا حل جذري بعد — نفس البوابة البريئة أعلاه؛ هذه وقاية إضافية فقط.
+/bool
+/dict\[*
+/list\[*
+/str\[*
+/int\[*
+/float\[*
+/Optional\[*
+/taxonomy-leaf
+/[{]*
+/*%
+
+# OS
+.DS_Store
+Thumbs.db
+
+# حطام الجولة 3 (نفس السبب المجهول، جذر المستودع فقط): أسماء عربية كُتبت عبر صفحة
+# ترميز غير UTF-8 ثم قُرئت كـUTF-8، فصارت رموز رسم مربّعات. رُصد فعلياً: ملف 0 بايت
+# اسمه تشويه «مجموعات» (2026-07-22). لا ملف مشروع شرعي يبدأ بهذه الرموز، فالنمط آمن.
+/┘*
+/╚*
+/┌*
+/┐*
+
+# Cloud deployment runtime state: never commit production secrets, backup material, or releases.
+/ops/config/*.env
+!/ops/config/*.env.example
+/ops/.runtime/

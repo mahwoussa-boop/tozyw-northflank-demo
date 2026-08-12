@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# يُثبت على الخادم في /usr/local/sbin/tozyw-release بصلاحية root:root و0750.
+# يستدعيه مستخدم deployer عبر sudo مقيد لهذا الملف فقط.
+set -Eeuo pipefail
+umask 027
+
+readonly RELEASE_ENV="${TOZYW_RELEASE_ENV:-/etc/tozyw/release.env}"
+[[ -r "$RELEASE_ENV" ]] && source "$RELEASE_ENV"
+
+readonly APP_ROOT="${TOZYW_APP_ROOT:-/opt/tozyw}"
+readonly REPOSITORY_URL="${TOZYW_REPOSITORY_URL:?يجب تعريف TOZYW_REPOSITORY_URL في /etc/tozyw/release.env}"
+readonly DATA_DIR="${TOZYW_DATA_DIR:-/srv/tozyw/data}"
+readonly SERVICE_NAME="${TOZYW_SERVICE_NAME:-tozyw.service}"
+readonly RELEASE_SHA="${1:?استخدم: tozyw-release <commit-sha>}"
+readonly RELEASES_DIR="$APP_ROOT/releases"
+readonly STAGING_DIR="$APP_ROOT/staging"
+readonly CURRENT_LINK="$APP_ROOT/current"
+readonly RELEASE_DIR="$RELEASES_DIR/$RELEASE_SHA"
+readonly LOCK_FILE="/run/lock/tozyw-release.lock"
+readonly DEPLOY_LOG_DIR="/var/log/tozyw"
+
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 2
+}
+
+[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "يجب أن يكون commit SHA كاملاً من 40 محرفاً سداسياً عشرياً."
+[[ -d "$DATA_DIR" && -w "$DATA_DIR" ]] || fail "مسار البيانات الدائم غير حاضر أو غير قابل للكتابة: $DATA_DIR"
+command -v git >/dev/null 2>&1 || fail "git غير مثبت"
+command -v flock >/dev/null 2>&1 || fail "flock غير مثبت"
+command -v curl >/dev/null 2>&1 || fail "curl غير مثبت"
+
+mkdir -p "$RELEASES_DIR" "$STAGING_DIR" "$DEPLOY_LOG_DIR"
+exec 9>"$LOCK_FILE"
+flock -n 9 || fail "هناك نشر آخر قيد التنفيذ؛ تم الإلغاء بأمان."
+
+rollback_target=""
+if [[ -L "$CURRENT_LINK" ]]; then
+  rollback_target="$(readlink -f "$CURRENT_LINK")"
+fi
+
+cleanup_staging() {
+  [[ -d "$STAGING_DIR/$RELEASE_SHA" ]] && rm -rf -- "$STAGING_DIR/$RELEASE_SHA"
+}
+trap cleanup_staging EXIT
+
+if [[ ! -d "$RELEASE_DIR/.git" ]]; then
+  rm -rf -- "$STAGING_DIR/$RELEASE_SHA"
+  git clone --no-checkout "$REPOSITORY_URL" "$STAGING_DIR/$RELEASE_SHA"
+  git -C "$STAGING_DIR/$RELEASE_SHA" fetch --depth 1 origin "$RELEASE_SHA"
+  git -C "$STAGING_DIR/$RELEASE_SHA" checkout --detach --force "$RELEASE_SHA"
+
+  [[ -f "$STAGING_DIR/$RELEASE_SHA/requirements.txt" ]] || fail "requirements.txt غير موجود في الإصدار المطلوب"
+  python3 -m venv "$STAGING_DIR/$RELEASE_SHA/.venv"
+  "$STAGING_DIR/$RELEASE_SHA/.venv/bin/pip" install --disable-pip-version-check --no-input -r "$STAGING_DIR/$RELEASE_SHA/requirements.txt"
+  "$STAGING_DIR/$RELEASE_SHA/.venv/bin/python" -m pytest -q
+
+  mv -- "$STAGING_DIR/$RELEASE_SHA" "$RELEASE_DIR"
+fi
+
+# نتحقق من قاعدة حية بلا تعديل. لا ينفذ النشر ترحيلات SQLite تلقائية.
+"$RELEASE_DIR/.venv/bin/python" - "$DATA_DIR" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+databases = list(root.glob("*.db"))
+if not databases:
+    raise SystemExit("لا توجد قاعدة SQLite تحت مسار البيانات الدائم")
+for database in databases:
+    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        result = connection.execute("PRAGMA quick_check").fetchone()
+    if result is None or result[0] != "ok":
+        raise SystemExit(f"فشل quick_check لقاعدة {database.name}: {result}")
+PY
+
+previous_target="$rollback_target"
+ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
+
+if ! systemctl restart "$SERVICE_NAME"; then
+  [[ -n "$previous_target" ]] && ln -sfn "$previous_target" "$CURRENT_LINK"
+  systemctl restart "$SERVICE_NAME" || true
+  fail "فشلت إعادة تشغيل الخدمة؛ أُعيد رابط الإصدار السابق."
+fi
+
+if ! curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8502/_stcore/health >/dev/null; then
+  [[ -n "$previous_target" ]] && ln -sfn "$previous_target" "$CURRENT_LINK"
+  systemctl restart "$SERVICE_NAME" || true
+  fail "فشل فحص الصحة؛ أُعيد رابط الإصدار السابق."
+fi
+
+printf '%s %s\n' "$(date --utc +%FT%TZ)" "$RELEASE_SHA" >> "$DEPLOY_LOG_DIR/releases.log"
+printf 'Deployment successful: %s\n' "$RELEASE_SHA"

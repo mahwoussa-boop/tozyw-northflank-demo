@@ -1,0 +1,23 @@
+# Mahwous Pricing v2 — runtime dependencies (المستودع مكتفٍ ذاتياً: engines/observability/utils/config مرفقة)
+# نسخ مثبّتة بدقّة (==) لتطابق Railway مع البيئة المحلية تماماً (يمنع انجراف رندر Streamlit
+# الذي كسر التنسيق سابقاً: >=1.40 جلب 1.58 على Railway مقابل 1.55 محلياً).
+streamlit==1.55.0      # st.badge / st.fragment + تطابق الرندر
+pydantic==2.12.5       # نماذج v2 (ConfigDict / field_validator / frozen)
+pandas==2.3.3
+numpy==2.4.3           # يستورده engines.engine مباشرةً (كان يُجلب ضمنياً عبر pandas)
+rapidfuzz==3.14.3      # token_set_ratio في المطابقة (سلوك المطابقة حسّاس للنسخة)
+requests==2.33.0       # نداءات AI + Make webhook (مثبّت لإعادة إنتاج مطابقة لـ Railway)
+openpyxl==3.1.5        # قراءة/تصدير Excel (رفع الكتالوج + التصدير)
+python-dotenv==1.2.2   # تحميل .env (اختياري — settings.py يعمل بدونه عبر بديل يدوي)
+
+# اختبارات
+pytest==9.0.2
+
+# ── اختياري: مطلوبة فقط لصفحة «🕷️ كشط المنافسين» (تُحمَّل كسولاً؛ التطبيق يقلع بدونها) ──
+# المسار الأساسي (لوحة/تسعير/مفقودات) لا يحتاجها — تُحقّق باستيراد نظيف.
+# selenium>=4.0        # كشط المتاجر عبر متصفّح (يتطلب ثنائي متصفّح على الخادم)
+# beautifulsoup4>=4.11 # تحليل HTML للكشط
+# aiohttp>=3.8         # طلبات كشط متزامنة (وحدات realtime)
+
+# Supabase (مرآة مصدر الحقيقة لـ sync_store_maps — اختياري)
+supabase>=2.0

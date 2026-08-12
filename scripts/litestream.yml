@@ -1,0 +1,41 @@
+# litestream.yml — نسخ احتياطي حيّ مستمرّ لقواعد «مهووس» إلى Cloudflare R2 (مجاني حتى 10GB)
+# =====================================================================================
+# لماذا Litestream؟ ينسخ SQLite لحظياً (WAL streaming) لا نسخاً غاشماً (cp) — يحترم قاعدة
+# «النسخ الآمن» ويصون سجلّ القرارات. المرآة السحابية تستعيد من هنا لتعرض للقراءة فقط.
+#
+# قبل التشغيل:
+#   1) أنشئ حاوية R2 اسمها mahwous-backups + رمز API (المالك، من لوحة Cloudflare).
+#   2) ضع المفاتيح في متغيّرات البيئة (لا تكتبها هنا أبداً، ولا تُودِع مفاتيح في git):
+#        setx R2_ACCESS_KEY_ID     "..."
+#        setx R2_SECRET_ACCESS_KEY "..."
+#      واستبدل <R2_ACCOUNT_ID> أدناه بمعرّف حسابك.
+#   3) التشغيل:  litestream replicate -config scripts\litestream.yml
+#      (سجّله خدمةً تعمل عند الإقلاع عبر NSSM أو مهمة مجدولة — انظر docs\استمرارية-وشبكة-مهووس.md)
+#
+# ملاحظة: أول رفعة ستُحمّل ~571MB مرّة واحدة (لقطة pricing_v18)؛ بعدها فروقات WAL صغيرة فقط.
+# match_cache_v22.db غير مشمول عمداً (كاش قابل لإعادة التوليد).
+
+dbs:
+  - path: C:\Users\Hp\Desktop\مهووس-للتوزيع\data\pricing_v18.db
+    replicas:
+      - type: s3
+        endpoint: https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com
+        bucket: mahwous-backups
+        path: pricing_v18
+        region: auto
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        force-path-style: true
+        retention: 168h        # احتفظ بـ 7 أيام من النقاط الزمنية
+
+  - path: C:\Users\Hp\Desktop\مهووس-للتوزيع\data\perfume_pricing.db
+    replicas:
+      - type: s3
+        endpoint: https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com
+        bucket: mahwous-backups
+        path: perfume_pricing
+        region: auto
+        access-key-id: ${R2_ACCESS_KEY_ID}
+        secret-access-key: ${R2_SECRET_ACCESS_KEY}
+        force-path-style: true
+        retention: 168h

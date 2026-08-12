@@ -1,0 +1,64 @@
+name: اختبار ونشر Tozyw إلى OCI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tozyw-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: اختبار Python
+    runs-on: ubuntu-24.04
+    steps:
+      - name: جلب المصدر
+        uses: actions/checkout@v4
+
+      - name: إعداد Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: تثبيت الاعتمادات
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: تنفيذ الاختبارات
+        run: pytest -q
+
+  deploy:
+    name: نشر SHA المختبر
+    needs: test
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - name: إعداد مفتاح SSH المؤقت
+        env:
+          OCI_SSH_PRIVATE_KEY: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
+          OCI_SSH_KNOWN_HOSTS: ${{ secrets.OCI_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$OCI_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$OCI_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: نشر الإصدار المختبَر فقط
+        env:
+          OCI_HOST: ${{ secrets.OCI_HOST }}
+          OCI_DEPLOY_USER: ${{ secrets.OCI_DEPLOY_USER }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/id_ed25519 \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$OCI_DEPLOY_USER@$OCI_HOST" \
+            "sudo -n /usr/local/sbin/tozyw-release '$DEPLOY_SHA'"
