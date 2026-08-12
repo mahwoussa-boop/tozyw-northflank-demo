@@ -291,22 +291,36 @@ def load_competitor_dfs(db_path: str) -> dict[str, pd.DataFrame]:
 
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"قاعدة المنافسين غير موجودة: {db_path}")
-    # ⚡ إسقاط أعمدة (perf): نقرأ الأعمدة الـ13 التي يستهلكها المحرّك فقط بدل
-    #    ``SELECT *`` (28 عموداً) — يخفض الذاكرة/الزمن ~النصف بلا تغيير سلوك.
-    #    CompIndex/enrich_known_brands يقرآن هذه الأعمدة حصراً؛ والبقية إمّا
-    #    يُعاد حسابها (norm_name/extracted_type) أو مسارها منفصل تماماً
-    #    (availability/rating_* عبر opportunity_service، image_urls عبر
-    #    CompetitorIntelligence باستعلامه الخاص). أعمدة إعادة التسمية الخمس
-    #    ضمن القائمة (product_name/price/image_url/product_url/competitor).
-    _COLS = (
-        "id, product_name, price, image_url, product_url, competitor, "
-        "brand, agg_name, extracted_brand, extracted_size, "
-        "extracted_gender, extracted_class, product_line"
+    # ⚡ إسقاط أعمدة (perf): نقرأ الأعمدة التي يستهلكها المحرّك فقط بدل
+    #    ``SELECT *``. بعض قواعد SQLite القديمة سبقت ترحيل v31.8، ولذلك قد
+    #    تغيب منها أعمدة الميزات المسبقة. هذه الحقول اختيارية: عند غيابها
+    #    نعيد قيمة حيادية بالاسم نفسه كي يحسبها المحرّك من product_name بدلاً
+    #    من إيقاف التحليل كله بـ ``no such column``.
+    _BASE_COLS = (
+        "id", "product_name", "price", "image_url", "product_url",
+        "competitor", "brand",
     )
+    _OPTIONAL_COLS = {
+        "agg_name": "''",
+        "extracted_brand": "''",
+        "extracted_size": "0",
+        "extracted_gender": "''",
+        "extracted_class": "''",
+        "product_line": "''",
+    }
     conn = sqlite3.connect(db_path)
     try:
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(competitor_products_store)")
+        }
+        select_cols = list(_BASE_COLS)
+        for col, fallback in _OPTIONAL_COLS.items():
+            select_cols.append(col if col in existing else f"{fallback} AS {col}")
         df = pd.read_sql_query(
-            f"SELECT {_COLS} FROM competitor_products_store WHERE price > 0", conn,
+            "SELECT " + ", ".join(select_cols)
+            + " FROM competitor_products_store WHERE price > 0",
+            conn,
         )
     finally:
         conn.close()
