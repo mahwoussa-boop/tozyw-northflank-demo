@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
@@ -425,7 +426,6 @@ class AppState:
             self._prune_stale_frames(dirpath, set(files.values()))
             return True
         except Exception:
-            import logging
             logging.getLogger("state_manager").exception("persist_results فشل حفظ اللقطة")
             return False
 
@@ -471,14 +471,30 @@ class AppState:
                 meta = json.load(handle)
             files = meta.get("frames") or {}
             loaded: dict[str, pd.DataFrame] = {}
+            lost: list[str] = []
             for key, fname in files.items():
                 fpath = os.path.join(dirpath, str(fname))
                 if not os.path.exists(fpath):
+                    lost.append(str(fname))
                     continue
-                with open(fpath, "r", encoding="utf-8") as handle:
-                    loaded[key] = pd.read_json(
-                        io.StringIO(handle.read()), orient="split",
+                try:
+                    with open(fpath, "r", encoding="utf-8") as handle:
+                        loaded[key] = pd.read_json(
+                            io.StringIO(handle.read()), orient="split",
+                        )
+                except Exception:
+                    # تخطّي إطار تالف بصمت يعني لوحةً تبدو **أصغر** لا معطوبة،
+                    # وهذا أخطر من الفشل الصريح لأنه لا يترك أثراً للتشخيص.
+                    lost.append(str(fname))
+                    logging.getLogger("state_manager").exception(
+                        "تعذّرت قراءة إطار اللقطة %s", fname,
                     )
+            if lost:
+                logging.getLogger("state_manager").warning(
+                    "لقطة ناقصة: %d إطاراً من %d غير مقروء (%s) — "
+                    "اللوحة ستعرض أقل ممّا حُفظ",
+                    len(lost), len(files), "، ".join(lost[:5]),
+                )
             sections: dict[str, Any] = {
                 key[len("sections."):]: frame
                 for key, frame in loaded.items() if key.startswith("sections.")
@@ -513,6 +529,9 @@ class AppState:
             self._reconcile_section_counts()
             return True
         except Exception:
+            logging.getLogger("state_manager").exception(
+                "تعذّرت استعادة لقطة صيغة 3 من %s", dirpath,
+            )
             return False
 
     def _restore_legacy(self) -> bool:
