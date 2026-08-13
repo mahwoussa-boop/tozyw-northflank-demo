@@ -116,6 +116,35 @@ def _render_ai_live_smoke() -> None:
     st.dataframe([summary], hide_index=True, use_container_width=True)
 
 
+def _render_ai_stress_probe() -> None:
+    """ينفّذ اختبار حمل محدوداً لمسار AI؛ لا يقرأ أو يكتب بيانات التطبيق."""
+    import streamlit as st
+
+    st.markdown("---")
+    st.subheader("📈 اختبار ضغط محدود للذكاء الاصطناعي")
+    st.caption(
+        "أربع طلبات تحليل قصيرة بحد أقصى طلبين متوازيين. لا يُشغّل الاختبار "
+        "عمليات كتالوج، ولا يُظهر استجابات المزوّد الخام أو مفاتيح API."
+    )
+    if not st.button("تشغيل اختبار الضغط المحدود", key="ai_bounded_stress_probe"):
+        return
+
+    try:
+        from engines.ai_engine import run_ai_stress_probe
+
+        with st.spinner("تُنفّذ أربع طلبات قصيرة على دفعتين متوازيتين…"):
+            report = run_ai_stress_probe(total_requests=4, max_concurrency=2)
+    except Exception:
+        st.error("تعذّر تشغيل اختبار الضغط. راجع سجل الخدمة.")
+        return
+
+    if report.get("failed"):
+        st.warning("اكتمل الاختبار مع طلبات لم تنجح؛ راجع نسبة النجاح والمؤشرات أدناه.")
+    else:
+        st.success("اكتمل اختبار الضغط المحدود بنجاح.")
+    st.dataframe([report], hide_index=True, use_container_width=True)
+
+
 def _image_env_path():
     """‏.env المرفق بالصورة — قيم افتراضية تُقرأ ولا يُكتب إليها في النشر."""
     from pathlib import Path
@@ -328,6 +357,7 @@ def render(state: AppState, *, container: Optional[Any] = None) -> None:
 
     _render_ai_diagnostic()
     _render_ai_live_smoke()
+    _render_ai_stress_probe()
 
     # ── معلومات النظام ──
     st.markdown("---")
