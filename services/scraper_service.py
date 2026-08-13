@@ -103,6 +103,13 @@ class ScraperService:
         self._db = str(competitor_db)
         self._price_monitor_db = price_monitor_db
         self._price_monitor = None
+        # حالة تشخيصية عابرة: تبقي الصفحة عاملة، لكنها تمنع عرض فشل SQLite كفراغ صحيح.
+        self._query_error: Optional[str] = None
+
+    @property
+    def query_error(self) -> Optional[str]:
+        """رسالة آمنة للواجهة عن آخر فشل قراءة، أو ``None`` عند نجاح القراءة."""
+        return self._query_error
 
     # ═══════════════════════════════════════════════════════════════════
     #  إدارة المنافسين (JSON)
@@ -614,6 +621,8 @@ class ScraperService:
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         import sqlite3
+        # قاعدة غائبة تعني «لا بيانات بعد»؛ أما فشل القراءة فيجب أن يبقى مرئياً للواجهة.
+        self._query_error = None
         self._ensure_schema()
         if not Path(self._db).exists():
             return []
@@ -628,6 +637,9 @@ class ScraperService:
             finally:
                 con.close()
         except Exception:
+            # لا نرفع الاستثناء كي لا تنكسر الصفحة، لكن لا نساوي بين العطب والنتيجة الفارغة.
+            self._query_error = "تعذّر قراءة بيانات الكشط. أعد المحاولة لاحقاً."
+            logger.exception("تعذّر استعلام بيانات الكشط")
             return []
         return [dict(r) for r in rows]
 

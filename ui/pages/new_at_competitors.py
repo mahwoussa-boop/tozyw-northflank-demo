@@ -407,6 +407,9 @@ def render(state: AppState, scraper: ScraperService) -> None:
 
     stores = scraper.competitor_names()
     render_page_header("جديد عند المنافسين", section="new_at_comp")
+    if scraper.query_error:
+        st.error(scraper.query_error)
+        return
     if not stores:
         st.info(
             "لا توجد بيانات كشط بعد. اكشط متجراً من «🕷️ كشط المنافسين» "
@@ -436,6 +439,10 @@ def render(state: AppState, scraper: ScraperService) -> None:
         period_label = ""
         rows = scraper.out_of_stock(competitor=competitor, limit=10000)
 
+    if scraper.query_error:
+        st.error(scraper.query_error)
+        return
+
     # ── عدّادات الشريط (تعكس فلتر المنافس) ──
     # OOS: عدّاد صادق بـ COUNT مباشر — العدد الحقيقي (لا يُقتطع عند 10000) وبلا
     # materialize ثقيل. (عدّاد «الجديد» يبقى len لأن كلفته الاستعلامُ الفرعي المرتبط
@@ -445,6 +452,9 @@ def render(state: AppState, scraper: ScraperService) -> None:
         n_new = len(rows)
     else:
         n_new = len(scraper.new_products(competitor=competitor, limit=10000))
+    if scraper.query_error:
+        st.error(scraper.query_error)
+        return
     st.markdown(_ctrl_bar(n_new, n_oos), unsafe_allow_html=True)
 
     # CSS البطاقة المُثبَتة (كل تشغيلة — يضمن العرض الصحيح RTL)
