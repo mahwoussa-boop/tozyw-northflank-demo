@@ -78,8 +78,8 @@ def render_pagination(view: PageView, key: str) -> None:
         c1.caption(f"{view.caption} · صفحة {view.page}/{view.total_pages}")
         if view.total_pages > 1:
             jump_page = c2.number_input(
-                "", min_value=1, max_value=view.total_pages, value=view.page,
-                key=f"{key}_jump", label_visibility="collapsed",
+                "انتقل إلى الصفحة", min_value=1, max_value=view.total_pages,
+                value=view.page, key=f"{key}_jump", label_visibility="collapsed",
             )
             if jump_page != view.page:
                 if c2.button("⏩ اذهب", key=f"{key}_go", use_container_width=True):
