@@ -62,6 +62,38 @@ def kpi_breakdown(result: Any) -> list[tuple[str, int, Optional[float]]]:
     ]
 
 
+def catalog_total(result: Any) -> int:
+    """مجموع أقسام **كتالوجنا** وحده (بلا المفقودات). خالص."""
+    counts = getattr(result, "section_counts", None)
+    if not counts:
+        return 0
+    from core.enums import SectionType
+
+    return sum(c for s, c in counts.items() if s != SectionType.MISSING)
+
+
+def missing_split(result: Any, sections: Optional[dict]) -> tuple[int, int]:
+    """(مفقود مؤكَّد، مفقود محتمل) — كونٌ منفصل عن الكتالوج تماماً. خالص.
+
+    م6: البطاقة كانت تعرض المؤكَّد وحده (13,693) بينما صفحة المفقودات تعرض
+    55,316 — رقمان مختلفان لنفس الشيء في شاشتين، فيظنّ المالك أن أحدهما خطأ.
+    المحتمل يعيش في ``sections["missing_review"]`` لا في ``section_counts``.
+    """
+    from core.enums import SectionType
+
+    counts = getattr(result, "section_counts", None) or {}
+    confirmed = int(counts.get(SectionType.MISSING, 0) or 0)
+    possible = 0
+    if sections:
+        review = sections.get("missing_review")
+        if review is not None:
+            try:
+                possible = int(len(review))
+            except TypeError:
+                possible = 0
+    return confirmed, possible
+
+
 def top_urgent_products(
     sections: Optional[dict], n: int = 5,
 ) -> list[dict[str, Any]]:
@@ -711,6 +743,10 @@ def _render_kpis(state: AppState) -> None:
     if not breakdown:
         return
     st.subheader("📊 توزيع الأقسام")
+    # م6: كونان منفصلان لا يُجمعان في مقام واحد أبداً — «من كتالوجنا» نسبتها من
+    # الكتالوج، و«من عروض المنافسين» عددٌ مطلق بلا نسبة (لا مقام مشترك يصحّ).
+    _cat_total = catalog_total(state.analysis_results)
+    _confirmed, _possible = missing_split(state.analysis_results, state.sections)
     # بناء بطاقات مصغرة ملوّنة لكل قسم
     _sec_colors = {
         SectionType.PRICE_RAISE: COLORS["raise"],
@@ -720,33 +756,60 @@ def _render_kpis(state: AppState) -> None:
         SectionType.REVIEW: COLORS["review"],
         SectionType.EXCLUDED: COLORS["excluded"],
     }
-    cards_html = ""
-    for label, count, pct in breakdown:
-        # استخراج اللون من التسمية (الأيقونة الأولى → القسم)
-        sec_key = next(
-            (s for s, lbl in SECTION_LABELS.items() if lbl == label),
-            None,
-        )
-        color = _sec_colors.get(sec_key, "#818CF8") if sec_key else "#818CF8"
-        # تدرج لوني خفيف للبطاقة
-        bg_color = f"{color}08"
-        cards_html += (
+    def _card(label: str, count: int, foot: str, color: str) -> str:
+        bg_color = f"{color}08"  # تدرج لوني خفيف للبطاقة
+        return (
             f'<div style="flex:1;min-width:130px;background:linear-gradient(180deg,{bg_color},rgba(22,22,26,.9));'
             f'border:1px solid #1F2937;border-top:3px solid {color};'
             f'border-radius:12px;padding:12px 14px;text-align:center;'
             f'transition:transform .2s,box-shadow .2s" class="mhw-kpi-card">'
-            f'<div style="font-size:.74rem;color:#94A3B8;margin-bottom:4px">{label}</div>'
+            f'<div style="font-size:.74rem;color:#94A3B8;margin-bottom:4px">{_h(label)}</div>'
             f'<div style="font-size:1.8rem;font-weight:900;color:#E2E8F0;line-height:1.1">'
             f'{count:,}</div>'
             f'<div style="font-size:.7rem;color:{color};font-weight:700;margin-top:4px">'
-            f'{f"{pct:.1f}% من الكتالوج" if pct is not None else "خارج كتالوجنا"}</div>'
+            f'{_h(foot)}</div>'
             f'</div>'
         )
-    st.markdown(
-        f'<div style="display:flex;gap:10px;flex-wrap:wrap;direction:rtl;'
-        f'font-family:Tajawal,sans-serif;margin:6px 0 12px">{cards_html}</div>',
-        unsafe_allow_html=True,
-    )
+
+    def _strip(cards: str) -> str:
+        return (
+            f'<div style="display:flex;gap:10px;flex-wrap:wrap;direction:rtl;'
+            f'font-family:Tajawal,sans-serif;margin:6px 0 12px">{cards}</div>'
+        )
+
+    def _heading(text: str) -> str:
+        return (
+            f'<div style="direction:rtl;font-family:Tajawal,sans-serif;font-size:.8rem;'
+            f'font-weight:800;color:#94A3B8;margin:10px 0 2px">{_h(text)}</div>'
+        )
+
+    catalog_cards = ""
+    for label, count, pct in breakdown:
+        sec_key = next((s for s, lbl in SECTION_LABELS.items() if lbl == label), None)
+        if sec_key == SectionType.MISSING:
+            continue  # كونٌ آخر — يُعرض في شريطه المستقل أدناه
+        color = _sec_colors.get(sec_key, "#818CF8") if sec_key else "#818CF8"
+        foot = f"{pct:.1f}% من الكتالوج" if pct is not None else "—"
+        catalog_cards += _card(label, count, foot, color)
+
+    html_out = _heading(f"من كتالوجنا — {_cat_total:,} منتجاً") + _strip(catalog_cards)
+
+    # الشريط الثاني: عروض المنافسين التي لا نملكها — بلا نسبة، ومفصولة مؤكَّد/محتمل.
+    if _confirmed or _possible:
+        miss_color = _sec_colors.get(SectionType.MISSING, "#0EA5E9")
+        miss_cards = (
+            _card("🔍 مفقود مؤكَّد", _confirmed, "لا نملكه — جاهز للإضافة", miss_color)
+            + _card("🤔 مفقود محتمل", _possible, "يحتاج مراجعة فردية", miss_color)
+        )
+        html_out += (
+            _heading(
+                f"من عروض المنافسين — {_confirmed + _possible:,} عرضاً "
+                "(خارج كتالوجنا، لا نسبة له منه)"
+            )
+            + _strip(miss_cards)
+        )
+
+    st.markdown(html_out, unsafe_allow_html=True)
 
 
 def _render_urgent(state: AppState) -> None:

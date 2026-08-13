@@ -1823,7 +1823,8 @@ class CompIndex:
             self.agg_names = self.df["agg_name"].fillna("").astype(str).tolist()
             self.brands    = self.df["extracted_brand"].fillna("").astype(str).tolist()
             self.sizes     = pd.to_numeric(self.df["extracted_size"], errors='coerce').fillna(0).tolist()
-            # v34: التركيز يُعاد حسابه طازجاً دائماً (عمود extracted_type قديم بمنطق ضعيف)
+            # التركيز يُعاد حسابه طازجاً دائماً: العمود المخزّن يطابق المستخرج الحيّ،
+            # لكن الحساب الطازج يحمي المطابقة من تأخّر تعبئة backfill.
             self.types     = [extract_type(n) for n in self.raw_names]
             self.genders   = self.df["extracted_gender"].fillna("").astype(str).tolist()
             self.plines    = self.df["product_line"].fillna("").astype(str).tolist()
