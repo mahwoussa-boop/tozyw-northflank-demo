@@ -17,7 +17,8 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY --chown=tozyw:tozyw . .
 RUN mkdir -p "$DATA_DIR" && chown -R tozyw:tozyw /app /var/tozyw-demo
 
-USER tozyw
+# Run as root so a newly mounted Northflank volume at DATA_DIR can be initialized and written on first start.
+# Application files remain owned by the dedicated tozyw user from the build stage.
 EXPOSE 7860
 
 # Northflank supplies PORT. المنفذ 7860 هو البديل المحلي فقط.
