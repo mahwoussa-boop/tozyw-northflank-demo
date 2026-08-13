@@ -16,6 +16,18 @@ from services import send_quality_guard as guard
 from services.send_quality_guard import split_low_quality
 
 
+@pytest.fixture(autouse=True)
+def _enable_gate_for_guard_tests(monkeypatch, request):
+    """اختبارات الحجب تفعّل الحارس صراحةً؛ الإصدار الافتراضي مراقبة بلا حجب."""
+    if request.node.name != "test_release_default_disables_the_gate":
+        monkeypatch.setattr(guard, "ENFORCED_SECTIONS", {"raise", "lower"})
+
+
+def test_release_default_disables_the_gate():
+    """نشر المرحلة الأولى لا يحجز أي تحديث سعر قبل قياس مستقل."""
+    assert guard.ENFORCED_SECTIONS == set()
+
+
 def _market_db(tmp_path, rows):
     """قاعدة سوق مصغّرة بنفس مخطّط opportunity_scores الذي يقرأه الحارس."""
     db = tmp_path / "pricing_v18.db"

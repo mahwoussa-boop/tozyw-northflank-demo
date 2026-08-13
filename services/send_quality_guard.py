@@ -17,8 +17,8 @@
 
 مبادئ صارمة (مطابقة لـ ``send_floor_guard``/``send_band_guard``):
   • القراءة ``mode=ro`` فقط — صفر كتابة، صفر تعديل سعر.
-  • ``ENFORCED_SECTIONS`` مجموعة مسمّاة — تفريغها (``set()``) يعطّل الحجب فوراً
-    بلا حذف كود — مسار تراجع فوري. وكذلك ``MIN_MATCH_SCORE = 0`` و
+  • ``ENFORCED_SECTIONS`` مجموعة مسمّاة — الإصدار الأول يتركها ``set()`` لتعطيل
+    الحجب، ويُفعّلها قرار منفصل بعد قياس مستقل. وكذلك ``MIN_MATCH_SCORE = 0`` و
     ``REQUIRE_IN_STOCK = False`` يعطّلان فحصيهما وحدهما.
   • fail-open: أي خطأ قاعدة/صفّ سوق غائب ⇒ يمرّ (عطل تقني لا يوقف الإرسال).
   • لا رفض صامت: كل محجوز يحمل ``blocked_reason`` نصياً عربياً ظاهراً، ويعود
@@ -34,8 +34,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Optional
 
-# الأقسام التي ترسل تغيير سعر فعلي لسلة — نفس مجموعة send_band_guard.
-ENFORCED_SECTIONS: set = {"raise", "lower"}
+# الإصدار الأول: الحجب معطّل صراحةً لحين قياس مستقل على بيانات الإنتاج.
+# التفعيل التدريجي لاحقاً يكون بـ {"raise", "lower"} بعد قرار منفصل.
+ENFORCED_SECTIONS: set = set()
 
 # عتبة الثقة الدنيا (0-100). صفّرها لتعطيل فحص الثقة وحده.
 MIN_MATCH_SCORE: float = 80.0
