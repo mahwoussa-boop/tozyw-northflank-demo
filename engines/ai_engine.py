@@ -331,6 +331,63 @@ PAGE_PROMPTS = {
 }
 
 # ══ استدعاءات AI ═══════════════════════════════════════════════════════════
+def run_ai_stress_probe(total_requests: int = 4, max_concurrency: int = 2) -> dict:
+    """يشغّل اختبار حمل محدوداً لمسار التحليل دون قراءة أو كتابة بيانات التطبيق.
+
+    الحدود مقصودة لحماية حاوية الخدمة ومزوّد الذكاء: حتى ستة طلبات وبحد أقصى
+    طلبين متوازيين. ولا يعيد هذا الفاحص نصوص الاستجابة الخام أو أي أسرار.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from collections import Counter
+    from time import perf_counter
+
+    if not 1 <= total_requests <= 6:
+        raise ValueError("total_requests must be between 1 and 6")
+    if not 1 <= max_concurrency <= 2:
+        raise ValueError("max_concurrency must be between 1 and 2")
+
+    prompt = (
+        "اختبار داخلي قصير: قارن Dior Sauvage EDP 100ml مع Dior Sauvage Eau de Parfum 100 ml، "
+        "ثم مع Dior Sauvage EDP 50ml. اكتب سطرين فقط: الأولى مطابقة والثانية غير مطابقة لاختلاف الحجم."
+    )
+
+    def _one_request(_: int) -> dict:
+        started = perf_counter()
+        try:
+            result = call_ai(prompt, page="review")
+        except Exception:
+            result = {"success": False, "source": "exception"}
+        return {
+            "success": bool(result.get("success")) if isinstance(result, dict) else False,
+            "source": str(result.get("source") or "none") if isinstance(result, dict) else "none",
+            "latency_seconds": round(perf_counter() - started, 3),
+        }
+
+    started = perf_counter()
+    outcomes: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(max_concurrency, total_requests)) as executor:
+        futures = [executor.submit(_one_request, index) for index in range(total_requests)]
+        for future in as_completed(futures):
+            outcomes.append(future.result())
+
+    latencies = sorted(item["latency_seconds"] for item in outcomes)
+    successes = sum(1 for item in outcomes if item["success"])
+    sources = Counter(item["source"] for item in outcomes if item["success"])
+    percentile_index = max(0, min(len(latencies) - 1, round(0.95 * len(latencies)) - 1))
+    return {
+        "requested": total_requests,
+        "concurrency": min(max_concurrency, total_requests),
+        "succeeded": successes,
+        "failed": total_requests - successes,
+        "success_rate_percent": round(100 * successes / total_requests, 1),
+        "elapsed_seconds": round(perf_counter() - started, 3),
+        "latency_avg_seconds": round(sum(latencies) / len(latencies), 3),
+        "latency_p95_seconds": latencies[percentile_index],
+        "latency_max_seconds": latencies[-1],
+        "providers": dict(sources),
+    }
+
+
 def _call_gemini(prompt, system="", grounding=False, temperature=0.3, max_tokens=8192):
     full = f"{system}\n\n{prompt}" if system else prompt
     payload = {
