@@ -65,6 +65,57 @@ def _render_ai_diagnostic() -> None:
         st.warning("لا يوجد مزوّد ذكاء اصطناعي يستجيب حالياً. راجع الإعدادات أو حدود الاستخدام.")
 
 
+def _ai_live_smoke_summary(result: dict[str, Any]) -> dict[str, str]:
+    """يلخّص اختبار المطابقة الحي دون عرض محتوى الاستجابة أو أي أسرار."""
+    if bool(result.get("success")):
+        return {
+            "الحالة": "✅ استجابة حية ناجحة",
+            "المزوّد": str(result.get("source") or "—"),
+            "العينة": "مطابقة SKU بحجم وتركيز محددين",
+        }
+    return {
+        "الحالة": "❌ لم تصل استجابة حية",
+        "المزوّد": str(result.get("source") or "—"),
+        "العينة": "مطابقة SKU بحجم وتركيز محددين",
+    }
+
+
+def _render_ai_live_smoke() -> None:
+    """ينفذ عينة تحليل صغيرة عبر المسار الفعلي للمزوّد من دون كتابة نتائج."""
+    import streamlit as st
+
+    st.markdown("---")
+    st.subheader("🔬 عينة تحليل ومطابقة حية")
+    st.caption(
+        "طلب واحد صغير يختبر تحليل الذكاء الاصطناعي لمنطق مطابقة SKU، "
+        "ولا يقرأ قاعدة البيانات أو يكتب أي نتيجة أو يعرض نص استجابة المزوّد."
+    )
+    if not st.button("تشغيل العينة الحية", key="ai_live_matching_smoke"):
+        return
+
+    prompt = (
+        "اختبار داخلي قصير لمنطق مطابقة SKU. قارن الحالتين فقط: "
+        "(1) Dior Sauvage EDP 100ml مقابل Dior Sauvage Eau de Parfum 100 ml؛ "
+        "(2) Dior Sauvage EDP 100ml مقابل Dior Sauvage EDP 50ml. "
+        "اذكر في سطرين أن الأولى مطابقة والثانية غير مطابقة بسبب اختلاف الحجم."
+    )
+    try:
+        from engines.ai_engine import call_ai
+
+        with st.spinner("يُرسل طلب تحليل واحد قصير…"):
+            result = call_ai(prompt, page="review")
+    except Exception:
+        st.error("تعذّر تشغيل العينة الحية. راجع سجل الخدمة.")
+        return
+
+    summary = _ai_live_smoke_summary(result if isinstance(result, dict) else {})
+    if str(summary["الحالة"]).startswith("✅"):
+        st.success("نجح مسار التحليل والمطابقة الحي.")
+    else:
+        st.error("لم ينجح مسار التحليل الحي. راجع حالة المزوّدات.")
+    st.dataframe([summary], hide_index=True, use_container_width=True)
+
+
 def _image_env_path():
     """‏.env المرفق بالصورة — قيم افتراضية تُقرأ ولا يُكتب إليها في النشر."""
     from pathlib import Path
@@ -276,6 +327,7 @@ def render(state: AppState, *, container: Optional[Any] = None) -> None:
             st.info("ℹ️ لم تُدخل أي تغييرات")
 
     _render_ai_diagnostic()
+    _render_ai_live_smoke()
 
     # ── معلومات النظام ──
     st.markdown("---")
