@@ -13,6 +13,58 @@ from typing import Any, Optional
 from ui.state_manager import AppState
 
 
+def _ai_diagnostic_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """يبسّط تقرير التشخيص للعرض دون مفاتيح أو نصوص استجابة حساسة."""
+    rows: list[dict[str, Any]] = []
+    for item in report.get("gemini") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append({
+            "المزوّد": "Gemini",
+            "المفتاح": item.get("key", "—"),
+            "الحالة": str(item.get("status") or "—"),
+            "HTTP": item.get("status_code") or "—",
+        })
+    for provider in ("openrouter", "cohere"):
+        rows.append({
+            "المزوّد": provider.title(),
+            "المفتاح": "—",
+            "الحالة": str(report.get(provider) or "⚠️ غير مهيأ"),
+            "HTTP": "—",
+        })
+    return rows
+
+
+def _render_ai_diagnostic() -> None:
+    """يشغّل طلباً اختبارياً قصيراً لكل مزوّد، بلا كتابة أو كشف أسرار."""
+    import streamlit as st
+
+    st.markdown("---")
+    st.subheader("🩺 فحص اتصال مزودي الذكاء الاصطناعي")
+    st.caption(
+        "فحص قراءة-فقط: يرسل طلباً اختبارياً قصيراً للمزوّدات المهيأة، "
+        "ولا يعرض المفاتيح أو نصوص الاستجابة."
+    )
+    if not st.button("تشغيل فحص الذكاء الاصطناعي", key="ai_provider_diagnostic"):
+        return
+
+    try:
+        from engines.ai_engine import diagnose_ai_providers
+
+        with st.spinner("يُفحص اتصال Gemini وOpenRouter وCohere…"):
+            report = diagnose_ai_providers()
+    except Exception:
+        st.error("تعذّر تشغيل فحص مزودي الذكاء الاصطناعي. راجع سجل الخدمة.")
+        return
+
+    rows = _ai_diagnostic_rows(report)
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+    for recommendation in report.get("recommendations") or []:
+        st.info(str(recommendation))
+    if not any("✅" in str(row["الحالة"]) for row in rows):
+        st.warning("لا يوجد مزوّد ذكاء اصطناعي يستجيب حالياً. راجع الإعدادات أو حدود الاستخدام.")
+
+
 def _image_env_path():
     """‏.env المرفق بالصورة — قيم افتراضية تُقرأ ولا يُكتب إليها في النشر."""
     from pathlib import Path
@@ -222,6 +274,8 @@ def render(state: AppState, *, container: Optional[Any] = None) -> None:
                 )
         else:
             st.info("ℹ️ لم تُدخل أي تغييرات")
+
+    _render_ai_diagnostic()
 
     # ── معلومات النظام ──
     st.markdown("---")
