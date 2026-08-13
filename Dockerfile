@@ -24,7 +24,7 @@ COPY --chown=tozyw:tozyw . .
 # Northflank قد يركّب Volume مملوكًا لـroot عند أول تشغيل؛ التشغيل بصلاحية root
 # يسمح بتهيئة /data ونسخ البذور دون فشل PermissionError. ملفات التطبيق نفسها
 # مملوكة للمستخدم المخصص tozyw من مرحلة البناء.
-RUN mkdir -p "$DATA_DIR" && chown -R tozyw:tozyw /app /var/tozyw-demo
+RUN chown -R tozyw:tozyw /app
 
 EXPOSE 7860
 
