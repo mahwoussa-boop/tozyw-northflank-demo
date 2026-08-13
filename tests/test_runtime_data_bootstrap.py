@@ -325,6 +325,71 @@ def test_previous_snapshot_is_archived_before_a_shipped_one_lands(
     assert len(previous["index"]) == 1
 
 
+def test_failure_midway_through_an_import_restores_previous_data(
+    tmp_path, monkeypatch, quiet_views, capsys,
+):
+    """الاستيراد يُبدّل بيانات حيّة على خطوتين — الفشل بينهما يجب أن يُعيد السابقة.
+
+    بلا هذا يبقى الحجم مجرَّداً بينما بيانات كاملة قابعة في recovery_backups،
+    فيرمي الإقلاع التالي «لا توجد قاعدة منافسين صالحة» على بيانات لم تُفقد أصلاً.
+    """
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.delenv("TOZYW_SEED_DATA_DIR", raising=False)
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", _make_archive(tmp_path, "rev1", rows=3))
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev1")
+    boot.main()
+    assert boot.has_competitor_data(data_dir / "pricing_v18.db") is True
+
+    # إصدار جديد يفشل بعد أن نُقلت البيانات السابقة جانباً
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", _make_archive(tmp_path, "rev2", rows=9))
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev2")
+    calls = {"n": 0}
+    original = boot.move_into_place
+
+    def fail_on_second(source, target):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full midway")
+        return original(source, target)
+
+    monkeypatch.setattr(boot, "move_into_place", fail_on_second)
+    boot.main()  # had_usable_data صحيح ⇒ يُبتلع ويُكمل، ولا يرمي
+
+    assert boot.has_competitor_data(data_dir / "pricing_v18.db") is True
+    connection = sqlite3.connect(data_dir / "pricing_v18.db")
+    rows = connection.execute("SELECT COUNT(*) FROM competitor_products_store").fetchone()[0]
+    connection.close()
+    assert rows == 3, "لم تُستعد بيانات الإصدار السابق"
+    assert (data_dir / boot._IMPORT_MARKER).read_text(encoding="utf-8").strip() == "rev1"
+    assert "أُعيدت البيانات السابقة" in capsys.readouterr().err
+
+
+def test_rollback_restores_the_previous_ui_snapshot(tmp_path, monkeypatch, quiet_views):
+    """اللقطة السابقة تُؤرشف قبل تركيب الجديدة — فالفشل بعدها يجب أن يُرجعها."""
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    url = _make_archive(tmp_path, "rev1")
+    _add_snapshot(Path(tmp_path / "rev1.zip"), frames={"review": 11})
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev1")
+    boot.main()
+
+    url2 = _make_archive(tmp_path, "rev2")
+    _add_snapshot(Path(tmp_path / "rev2.zip"), frames={"review": 22})
+    monkeypatch.setenv("TOZYW_RESULTS_IMPORT_URL", url2)
+    monkeypatch.setenv("TOZYW_RESULTS_REVISION", "rev2")
+    monkeypatch.setattr(
+        boot, "install_shipped_snapshot",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom")),
+    )
+    boot.main()
+
+    frame = json.loads(
+        (data_dir / "ui_session" / "pfx.sections.review.json").read_text(encoding="utf-8"))
+    assert len(frame["index"]) == 11, "لم تُستعد اللقطة السابقة"
+
+
 def test_snapshot_is_complete_rejects_broken_folders(tmp_path):
     assert boot.snapshot_is_complete(tmp_path / "absent") is False
 

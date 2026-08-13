@@ -117,6 +117,27 @@ def backup_incomplete_data(data_dir: Path) -> Path | None:
     return backup_dir
 
 
+def restore_from_backup(backup_dir: Path | None, data_dir: Path) -> list[str]:
+    """Move everything a ``recovery_backups`` folder holds back into ``data_dir``.
+
+    Needed because an import is a two-step mutation: the previous data is moved
+    aside first, then the staged data is moved in.  A failure between those steps
+    used to leave the volume stripped — the next boot raised "no valid competitor
+    database" while a complete data set sat untouched in ``recovery_backups/``,
+    turning a healthy service into a crash loop over data that was never lost.
+    """
+    if backup_dir is None or not backup_dir.is_dir():
+        return []
+    restored: list[str] = []
+    for source in sorted(backup_dir.iterdir()):
+        target = data_dir / source.name
+        if source.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        source.replace(target)
+        restored.append(source.name)
+    return restored
+
+
 def restore_seed(seed_dir: Path, data_dir: Path) -> list[str]:
     """Restore all available seed files and return copied file descriptions."""
     copied: list[str] = []
@@ -318,12 +339,24 @@ def import_requested_results(data_dir: Path) -> bool:
         if missing:
             raise RuntimeError(f"requested results archive is missing required files: {missing}")
         # Only once the staged set is proven valid do we touch the live files.
+        # Everything from here to the end of the block leaves DATA_DIR torn while
+        # it runs, so any failure inside it must put the previous data back.
         data_backup = backup_incomplete_data(data_dir)
-        for filename in extracted:
-            move_into_place(stage_dir / filename, data_dir / filename)
-        # Both of these must happen before the staging folder is removed on exit.
-        ui_backup = archive_ui_snapshot(data_dir, revision)
-        shipped = install_shipped_snapshot(stage_dir, data_dir)
+        ui_backup: Path | None = None
+        try:
+            for filename in extracted:
+                move_into_place(stage_dir / filename, data_dir / filename)
+            # Both of these must happen before the staging folder is removed on exit.
+            ui_backup = archive_ui_snapshot(data_dir, revision)
+            shipped = install_shipped_snapshot(stage_dir, data_dir)
+        except Exception:
+            rolled_back = (restore_from_backup(ui_backup, data_dir)
+                           + restore_from_backup(data_backup, data_dir))
+            print(
+                f"فشل الاستيراد في منتصفه؛ أُعيدت البيانات السابقة: {rolled_back}",
+                file=sys.stderr,
+            )
+            raise
 
     # With a shipped snapshot in place ``restore_snapshot`` reports "exists" and
     # leaves it untouched; only an archive without one pays for a rebuild.
