@@ -119,51 +119,14 @@ def _img(url: Any, size: int, *, border: str, radius: int = 10) -> str:
 
 
 # ── توفّر المنافس (نفذت/متوفر) — مخزّن مؤقتاً على مستوى العملية ──────────
-# مجموعة روابط منتجات المنافسين التي نفذت (availability=0)، تُقرأ مرّة واحدة
-# وتتحدّث تلقائياً عند تغيّر زمن تعديل قاعدة المنافسين (بعد كل كشطة جديدة).
-_AVAIL_CACHE: dict[str, Any] = {"sig": None, "oos": frozenset()}
-
-
+# نُقل الجسد إلى services/competitor_availability.py ليقرأه المحرّك أيضاً (كان
+# يجهل التوفّر تماماً فيختار مرجعاً سعرياً نافداً). الاسم يبقى كما هو هنا: نفس
+# السلوك ونفس الكاش، مصدرٌ واحد بدل نسختين تفترقان.
 def _oos_links() -> frozenset:
-    """روابط منتجات المنافسين النافِذة (availability=0). آمنة تماماً وسريعة.
+    """روابط منتجات المنافسين النافِذة (availability=0) — انظر الخدمة المشتركة."""
+    from services.competitor_availability import oos_links
 
-    تُخزَّن بمفتاح ``getmtime`` للقاعدة: استدعاء O(1) بعد أول بناء، وإعادة بناء
-    تلقائية بعد أي كشطة تُعدّل القاعدة. قاعدة/عمود مفقود ⇒ مجموعة فارغة.
-    """
-    import os
-
-    from conf.constants import COMPETITOR_DB_PATH
-
-    db = str(COMPETITOR_DB_PATH)
-    try:
-        sig = os.path.getmtime(db)
-    except OSError:
-        return frozenset()
-    if _AVAIL_CACHE["sig"] == sig:
-        return _AVAIL_CACHE["oos"]
-
-    import sqlite3
-
-    oos: set[str] = set()
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            cols = [r[1] for r in con.execute(
-                "PRAGMA table_info(competitor_products_store)")]
-            if "availability" in cols:
-                rows = con.execute(
-                    "SELECT product_url FROM competitor_products_store "
-                    "WHERE availability=0 AND product_url IS NOT NULL "
-                    "AND product_url<>''"
-                ).fetchall()
-                oos = {str(r[0]).strip() for r in rows if r[0]}
-        finally:
-            con.close()
-    except Exception:
-        oos = set()
-    _AVAIL_CACHE["sig"] = sig
-    _AVAIL_CACHE["oos"] = frozenset(oos)
-    return _AVAIL_CACHE["oos"]
+    return oos_links()
 
 
 def _avail_badge(comp: Mapping[str, Any]) -> str:
@@ -184,44 +147,11 @@ def _avail_badge(comp: Mapping[str, Any]) -> str:
 
 
 # ── قِدَم بيانات المنافس (طبقة عرض فوق حارس الطزاجة القائم في opportunity_service) ──
-_AGE_CACHE: dict[str, Any] = {"sig": None, "ages": {}}
-
-
 def _data_ages() -> dict[str, float]:
-    """خريطة رابط_منتج ← قِدَم البيانات بالأيام (نفس صيغة ``opportunity_service``:
-    ``julianday('now') - julianday(updated_at)``). مخزَّنة بمفتاح ``mtime`` كـ``_oos_links``."""
-    import os
+    """خريطة رابط_منتج ← قِدَم البيانات بالأيام — انظر الخدمة المشتركة."""
+    from services.competitor_availability import data_ages
 
-    from conf.constants import COMPETITOR_DB_PATH
-
-    db = str(COMPETITOR_DB_PATH)
-    try:
-        sig = os.path.getmtime(db)
-    except OSError:
-        return {}
-    if _AGE_CACHE["sig"] == sig:
-        return _AGE_CACHE["ages"]
-
-    import sqlite3
-
-    ages: dict[str, float] = {}
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            rows = con.execute(
-                "SELECT product_url, MIN(julianday('now') - julianday(updated_at)) "
-                "FROM competitor_products_store "
-                "WHERE product_url IS NOT NULL AND product_url<>'' "
-                "GROUP BY product_url"
-            ).fetchall()
-            ages = {str(r[0]).strip(): float(r[1]) for r in rows if r[0] and r[1] is not None}
-        finally:
-            con.close()
-    except Exception:
-        ages = {}
-    _AGE_CACHE["sig"] = sig
-    _AGE_CACHE["ages"] = ages
-    return _AGE_CACHE["ages"]
+    return data_ages()
 
 
 def _data_age_badge(comp: Mapping[str, Any]) -> str:

@@ -15,7 +15,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.data_paths import get_data_dir  # noqa: E402
+
+DATA_DIR = Path(get_data_dir())
 MIN_FREE_AFTER = 1.5 * 1024**3        # 1.5GB حد أدنى للمساحة الحرة بعد النسخ
 SMALL_MAX = 5 * 1024**2               # csv/json «صغير» = أقل من 5MB
 

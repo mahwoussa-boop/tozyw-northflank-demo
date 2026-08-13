@@ -23,6 +23,7 @@ from rapidfuzz.distance import Indel
 import requests as _req
 
 from engines.mahwous_core import apply_strict_pipeline_filters
+from services.competitor_availability import AVAIL_UNKNOWN
 
 # ─── استيراد الإعدادات ───────────────────────
 try:
@@ -1822,7 +1823,8 @@ class CompIndex:
             self.agg_names = self.df["agg_name"].fillna("").astype(str).tolist()
             self.brands    = self.df["extracted_brand"].fillna("").astype(str).tolist()
             self.sizes     = pd.to_numeric(self.df["extracted_size"], errors='coerce').fillna(0).tolist()
-            # v34: التركيز يُعاد حسابه طازجاً دائماً (عمود extracted_type قديم بمنطق ضعيف)
+            # التركيز يُعاد حسابه طازجاً دائماً: العمود المخزّن يطابق المستخرج الحيّ،
+            # لكن الحساب الطازج يحمي المطابقة من تأخّر تعبئة backfill.
             self.types     = [extract_type(n) for n in self.raw_names]
             self.genders   = self.df["extracted_gender"].fillna("").astype(str).tolist()
             self.plines    = self.df["product_line"].fillna("").astype(str).tolist()
@@ -2366,6 +2368,10 @@ def _excluded_match_row(
         تاريخ_المطابقة=datetime.now().strftime("%Y-%m-%d"),
         صورة_منتجنا=our_img or "",
         رابط_منتجنا=our_url or "",
+        # لا منافس مرجعي هنا ⇒ لا نَدَّعي توفّراً لم نقسه (م2).
+        توفر_المنافس=AVAIL_UNKNOWN,
+        عمر_بيانات_المنافس_أيام=None,
+        ملاحظة_المرجع="",
         رابط_المنافس="",
     )
 
@@ -2388,6 +2394,9 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
                     جميع_المنافسين=[], مصدر_المطابقة=src or "—",
                     تاريخ_المطابقة=datetime.now().strftime("%Y-%m-%d"),
                     صورة_منتجنا=our_img or "", رابط_منتجنا=our_url or "",
+                    توفر_المنافس=AVAIL_UNKNOWN,
+                    عمر_بيانات_المنافس_أيام=None,
+                    ملاحظة_المرجع="",
                     رابط_المنافس="")
 
     cp    = float(best.get("price") or 0)
@@ -2484,14 +2493,32 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
 
     ac = unique_competitors[:10] or [best]
 
-    # ── اختيار بطل البطاقة الرئيسية: الأرخص سعراً بين المتطابقين ──────────────
-    # البطاقة الرئيسية (VS card) تعرض: منتجنا VS أقل منافس سعراً
-    # هذا هو المنافس الذي يؤثر فعلاً على قرار التسعير
-    cheapest = min(
-        (c for c in ac if float(c.get("price", 0) or 0) > 0),
-        key=lambda c: float(c.get("price", 0) or 0),
-        default=best,
-    )
+    # ── اختيار بطل البطاقة الرئيسية: الأرخص **المتوفّر** بين المتطابقين ───────
+    # البطاقة الرئيسية (VS card) تعرض: منتجنا VS أقل منافس سعراً يمكن شراؤه.
+    # م3: عرضٌ نافد لا يضغط على سعرنا فعلياً (الزبون لا يستطيع شراءه)، لكنه كان
+    # يُختار مرجعاً بـmin(price) بلا أي فلترة توفّر فيولّد ضغطاً وهمياً لخفض
+    # السعر. قياس ظلّ على اللقطة الحيّة: 1,456 صفّاً (20.7% من أقسام السعر)
+    # مرجعها نافد، و417 صفّاً كان قسمها سيتغيّر — منها 293 تخرج من «سعر أعلى».
+    # النافد **يبقى معروضاً** ضمن جميع_المنافسين بشارته «🔴 نفذت»؛ لا يُحذف.
+    from services.competitor_availability import AVAIL_OUT as _AV_OUT
+    from services.competitor_availability import lookup as _avail_lookup
+
+    def _ref_url_of(cand) -> str:
+        return str(cand.get("product_url") or cand.get("url") or "").strip()
+
+    _priced = [c for c in ac if float(c.get("price", 0) or 0) > 0]
+    _by_price = lambda c: float(c.get("price", 0) or 0)  # noqa: E731
+    _abs_cheapest = min(_priced, key=_by_price) if _priced else best
+    _in_stock = [c for c in _priced if _avail_lookup(_ref_url_of(c))[0] != _AV_OUT]
+    cheapest = min(_in_stock, key=_by_price) if _in_stock else _abs_cheapest
+
+    # سطر سبب صريح: المالك يرى سعراً ليس هو الأرخص المعروض، فيجب أن يُقال لماذا.
+    if _in_stock and cheapest is not _abs_cheapest:
+        _ref_note = "المرجع الأرخص نافد — قورن بأرخص متوفّر"
+    elif _priced and not _in_stock:
+        _ref_note = "كل العروض المطابقة نافدة — المقارنة تاريخية"
+    else:
+        _ref_note = ""
 
     # أعد حساب السعر والفرق بناءً على الأرخص
     cp_display   = float(cheapest.get("price") or 0)
@@ -2539,6 +2566,11 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     if not best_competitor and competitor_names:
         best_competitor = competitor_names[0]
 
+    # م2: توفّر المنافس المرجعي وقِدَم بياناته — كانا غائبين تماماً عن إطارات
+    # القرار (صفر ورود لـavailability في هذا الملف)، فيُبنى القرار على عرضٍ قد
+    # يكون نافداً أو قديماً بلا أن يظهر ذلك للمالك.
+    _avail_label, _avail_age = _avail_lookup(_ref_url_of(cheapest))
+
     return dict(المنتج=product, معرف_المنتج=our_id, السعر=our_price,
                 الماركة=brand, الحجم=sz_str, النوع=ptype, الجنس=gender,
                 NO=str(no or ""),
@@ -2550,8 +2582,10 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
                 جميع_المنافسين=ac_sorted, مصدر_المطابقة=src or "fuzzy",
                 تاريخ_المطابقة=datetime.now().strftime("%Y-%m-%d"),
                 صورة_منتجنا=our_img or "", رابط_منتجنا=our_url or "",
-                رابط_المنافس=(str(cheapest.get("product_url") or cheapest.get("url") or "").strip()
-                               if _link_ok else ""))
+                توفر_المنافس=_avail_label,
+                عمر_بيانات_المنافس_أيام=_avail_age,
+                ملاحظة_المرجع=_ref_note,
+                رابط_المنافس=(_ref_url_of(cheapest) if _link_ok else ""))
 
 
 # ═══════════════════════════════════════════════════════

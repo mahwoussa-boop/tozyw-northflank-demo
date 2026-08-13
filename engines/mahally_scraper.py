@@ -22,6 +22,7 @@ import requests, re, json, time, logging, unicodedata, sqlite3, csv, os, threadi
 from datetime import datetime
 from typing import List, Dict, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from utils.data_paths import get_data_dir
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +67,11 @@ KNOWN_STORES = {
 }
 
 # ── مسار ملف المنافسين ─────────────────────────────────────────────────
-_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+# م8: كان يُثبَّت على <المشروع>/data متجاوزاً متغيّر البيئة DATA_DIR — فعلى أي
+# نشرٍ يضع البيانات على مجلد منفصل (Volume) يقرأ الكاشط قائمة منافسين **أخرى**
+# غير التي تكتبها بقية الوحدات. get_data_dir() هو نفسه مصدر conf.constants.DATA_DIR
+# ويرتدّ إلى المسار القديم نفسه عند غياب المتغيّر ⇒ لا تغيّر محلياً.
+_DATA_DIR = get_data_dir()
 COMPETITORS_JSON = os.path.join(_DATA_DIR, "competitors_list_v30.json")
 
 

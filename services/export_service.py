@@ -414,6 +414,7 @@ class ExportService:
                 "success": True, "confirmed": False, "state": "blocked_low_price",
                 "status_code": 0, "body": "", "blocked_low_price": blocked_low_price,
                 "held_outside_band": [],
+                "held_low_quality": [],
             }
         # ── سياج نطاق v1 (أ4، مرحلة 1 — قسم "سعر أعلى" فقط): يحجز خارج ±20% من الوسيط ──
         from services.send_band_guard import split_outside_band
@@ -423,6 +424,18 @@ class ExportService:
                 "success": True, "confirmed": False, "state": "held_outside_band",
                 "status_code": 0, "body": "", "blocked_low_price": blocked_low_price,
                 "held_outside_band": held_outside_band,
+                "held_low_quality": [],
+            }
+        # ── بوّابة أهلية الإرسال (م4): ثقة المطابقة · توفّر السوق · حداثة البيانات ──
+        # الحارسان أعلاه يحرسان السعر؛ هذا يحرس **جودة الدليل** الذي بُني عليه.
+        from services.send_quality_guard import split_low_quality
+        products, held_low_quality = split_low_quality(products)
+        if not products:
+            return {
+                "success": True, "confirmed": False, "state": "held_low_quality",
+                "status_code": 0, "body": "", "blocked_low_price": blocked_low_price,
+                "held_outside_band": held_outside_band,
+                "held_low_quality": held_low_quality,
             }
         from services.send_band_guard import record_and_strip_band_overrides
         products = record_and_strip_band_overrides(products)
@@ -493,6 +506,8 @@ class ExportService:
             result["blocked_low_price"] = blocked_low_price
         if held_outside_band:
             result["held_outside_band"] = held_outside_band
+        if held_low_quality:
+            result["held_low_quality"] = held_low_quality
         # ``send_log.success`` دليل إرسال نهائي فقط، لا مجرد قبول HTTP.
         self._log_send_batch(wtype, products, code or 0, confirmed, body or "")
         return result
