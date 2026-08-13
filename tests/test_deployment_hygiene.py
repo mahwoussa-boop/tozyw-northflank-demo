@@ -45,3 +45,15 @@ def test_pagination_number_input_has_an_accessible_nonempty_label():
     source = (ROOT / "ui" / "components" / "pagination.py").read_text(encoding="utf-8")
     assert 'c2.number_input(\n                "انتقل إلى الصفحة"' in source
     assert 'label_visibility="collapsed"' in source
+
+
+def test_dockerignore_keeps_required_runtime_assets():
+    """منع توسعة قاعدة استبعاد تُسقط مدخل التطبيق أو قائمة المنافسين من الصورة."""
+    patterns = _dockerignore_patterns()
+    for required in (
+        "app.py",
+        "requirements.txt",
+        "data/competitors_list_v30.json",
+    ):
+        assert (ROOT / required).is_file(), f"ملف تشغيل مفقود من المستودع: {required}"
+        assert not _ignored(required, patterns), f"ملف تشغيل مُستبعد من صورة Docker: {required}"
