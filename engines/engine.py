@@ -23,6 +23,7 @@ from rapidfuzz.distance import Indel
 import requests as _req
 
 from engines.mahwous_core import apply_strict_pipeline_filters
+from services.competitor_availability import AVAIL_UNKNOWN
 
 # ─── استيراد الإعدادات ───────────────────────
 try:
@@ -2366,6 +2367,9 @@ def _excluded_match_row(
         تاريخ_المطابقة=datetime.now().strftime("%Y-%m-%d"),
         صورة_منتجنا=our_img or "",
         رابط_منتجنا=our_url or "",
+        # لا منافس مرجعي هنا ⇒ لا نَدَّعي توفّراً لم نقسه (م2).
+        توفر_المنافس=AVAIL_UNKNOWN,
+        عمر_بيانات_المنافس_أيام=None,
         رابط_المنافس="",
     )
 
@@ -2388,6 +2392,8 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
                     جميع_المنافسين=[], مصدر_المطابقة=src or "—",
                     تاريخ_المطابقة=datetime.now().strftime("%Y-%m-%d"),
                     صورة_منتجنا=our_img or "", رابط_منتجنا=our_url or "",
+                    توفر_المنافس=AVAIL_UNKNOWN,
+                    عمر_بيانات_المنافس_أيام=None,
                     رابط_المنافس="")
 
     cp    = float(best.get("price") or 0)
@@ -2539,6 +2545,14 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     if not best_competitor and competitor_names:
         best_competitor = competitor_names[0]
 
+    # م2: توفّر المنافس المرجعي وقِدَم بياناته — كانا غائبين تماماً عن إطارات
+    # القرار (صفر ورود لـavailability في هذا الملف)، فيُبنى القرار على عرضٍ قد
+    # يكون نافداً أو قديماً بلا أن يظهر ذلك للمالك. استيراد كسول: المحرّك يعمل
+    # في خيوط خلفية وسكربتات، والخدمة تقرأ mode=ro بكاش على مستوى العملية.
+    from services.competitor_availability import lookup as _avail_lookup
+    _ref_url = str(cheapest.get("product_url") or cheapest.get("url") or "").strip()
+    _avail_label, _avail_age = _avail_lookup(_ref_url)
+
     return dict(المنتج=product, معرف_المنتج=our_id, السعر=our_price,
                 الماركة=brand, الحجم=sz_str, النوع=ptype, الجنس=gender,
                 NO=str(no or ""),
@@ -2550,6 +2564,8 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
                 جميع_المنافسين=ac_sorted, مصدر_المطابقة=src or "fuzzy",
                 تاريخ_المطابقة=datetime.now().strftime("%Y-%m-%d"),
                 صورة_منتجنا=our_img or "", رابط_منتجنا=our_url or "",
+                توفر_المنافس=_avail_label,
+                عمر_بيانات_المنافس_أيام=_avail_age,
                 رابط_المنافس=(str(cheapest.get("product_url") or cheapest.get("url") or "").strip()
                                if _link_ok else ""))
 
