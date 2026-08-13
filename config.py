@@ -8,6 +8,12 @@ import os as _os
 # ── تحميل .env تلقائياً ──────────────────────────────────────────────────
 try:
     from dotenv import load_dotenv as _load_dotenv
+    # نعطي أسرار المنصة (os.environ) الأولوية دائماً، ثم القيم المحفوظة على
+    # الحجم الدائم في Northflank، ثم افتراضات المشروع المحلية. هذا يمنع فقد
+    # مفاتيح الإعدادات بعد إعادة نشر الصورة ويضمن أن صفحة الإعدادات وAI يقرآن المصدر نفسه.
+    _data_dir = (_os.environ.get("DATA_DIR") or "").strip()
+    if _data_dir:
+        _load_dotenv(_os.path.join(_data_dir, ".env"), override=False)
     # تحميل .env من جذر المشروع صراحةً (مستقلّ عن مجلّد العمل) — يضمن قراءة المفاتيح
     # عند تشغيل Streamlit/‏.bat من أي مسار، لا فقط حين cwd = جذر المشروع.
     _load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env"), override=False)
@@ -15,8 +21,12 @@ try:
 except ImportError:
     # تحميل يدوي بدون مكتبة خارجية
     from pathlib import Path as _Path
-    _env_file = _Path(__file__).parent / ".env"
-    if _env_file.exists():
+    _root_env_file = _Path(__file__).parent / ".env"
+    _data_dir = (_os.environ.get("DATA_DIR") or "").strip()
+    _env_files = ([_Path(_data_dir) / ".env"] if _data_dir else []) + [_root_env_file]
+    for _env_file in _env_files:
+        if not _env_file.exists():
+            continue
         try:
             with open(_env_file, encoding="utf-8") as _f:
                 for _line in _f:
