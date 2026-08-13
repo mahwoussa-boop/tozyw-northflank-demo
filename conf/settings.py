@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,14 +19,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from conf.constants import DEFAULT_DB_PATH, PROJECT_ROOT
 
 
-def _load_dotenv() -> None:
-    """يحمّل ``.env`` من جذر المستودع إلى ``os.environ`` عند بدء التشغيل.
+def _load_env_file(env_file: Path) -> None:
+    """يحمّل ملف ``.env`` واحداً إلى ``os.environ`` بلا طغيان على الموجود.
 
-    لا يطغى على متغيّرات بيئة موجودة (``setdefault``/``override=False``) كي
-    تبقى أسرار Railway/النظام لها الأولوية. يستخدم ``python-dotenv`` إن توفّر،
-    وإلا يقرأ الملف يدوياً (سطور ``KEY=VALUE`` مع تجاهل الفراغ والتعليقات).
+    ``setdefault``/``override=False`` تُبقي أسرار المنصّة (Northflank/Railway)
+    صاحبةَ الأولوية دائماً. يستخدم ``python-dotenv`` إن توفّر، وإلا يقرأ الملف
+    يدوياً (سطور ``KEY=VALUE`` مع تجاهل الفراغ والتعليقات).
     """
-    env_file = PROJECT_ROOT / ".env"
     if not env_file.exists():
         return
     try:
@@ -40,6 +40,19 @@ def _load_dotenv() -> None:
         if line and not line.startswith("#") and "=" in line:
             key, _, val = line.partition("=")
             os.environ.setdefault(key.strip(), val.strip())
+
+
+def _load_dotenv() -> None:
+    """يحمّل ``.env`` الدائم ثم المرفق بالصورة، بهذا الترتيب.
+
+    جذر التطبيق داخل الحاوية يُستبدل مع كل نشر، فما تحفظه صفحة الإعدادات يعيش
+    على ``DATA_DIR``. تحميله **أوّلاً** يجعله يفوز على قيم الصورة الافتراضية،
+    لأن الثاني لا يطغى (``override=False``)، بينما تبقى أسرار المنصّة فوقهما.
+    """
+    data_dir = (os.environ.get("DATA_DIR") or "").strip()
+    if data_dir:
+        _load_env_file(Path(data_dir) / ".env")
+    _load_env_file(PROJECT_ROOT / ".env")
 
 
 _load_dotenv()
