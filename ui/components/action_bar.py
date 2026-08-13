@@ -83,6 +83,7 @@ def send_in_batches(
     errors: list[str] = []
     blocked_low_price: list = []  # أ2: عناصر حجزها send_floor_guard — لا فشل ولا إرسال
     held_outside_band: list = []  # أ4: عناصر حجزها send_band_guard (خارج نطاق v1) — لا فشل ولا إرسال
+    held_low_quality: list = []   # م4: عناصر حجزها send_quality_guard (ثقة/توفّر/حداثة)
     for index, chunk in enumerate(chunks):
         ok = pending_confirmation = False
         last_err = ""
@@ -101,16 +102,18 @@ def send_in_batches(
                 last_err = str(exc)
                 res = {}
             if ok or pending_confirmation or res.get("state") in {
-                "blocked_low_price", "held_outside_band",
+                "blocked_low_price", "held_outside_band", "held_low_quality",
             }:
                 break
             if attempt < max_retries:
                 sleep(2 * attempt)
         _blocked = res.get("blocked_low_price", []) or []
         _held = res.get("held_outside_band", []) or []
+        _held_q = res.get("held_low_quality", []) or []
         blocked_low_price.extend(_blocked)
         held_outside_band.extend(_held)
-        eligible = len(chunk) - len(_blocked) - len(_held)
+        held_low_quality.extend(_held_q)
+        eligible = len(chunk) - len(_blocked) - len(_held) - len(_held_q)
         sent += eligible if ok else 0
         accepted += eligible if pending_confirmation else 0
         if ok and confirmed_items_cb:
@@ -120,13 +123,14 @@ def send_in_batches(
             confirmed_items = res.get("delivered_items", [])
             if isinstance(confirmed_items, list):
                 confirmed_items_cb(confirmed_items)
-        if not ok and not pending_confirmation and not (_blocked or _held):
+        if not ok and not pending_confirmation and not (_blocked or _held or _held_q):
             failed += len(chunk)
         if not ok and not pending_confirmation and last_err:
             errors.append(last_err)
         if progress_cb:
             progress_cb(
-                sent + accepted + failed + len(blocked_low_price) + len(held_outside_band),
+                sent + accepted + failed + len(blocked_low_price) + len(held_outside_band)
+                + len(held_low_quality),
                 total,
             )
         if index < len(chunks) - 1:
@@ -136,6 +140,7 @@ def send_in_batches(
         "total": total, "errors": errors[:5],
         "blocked_low_price": blocked_low_price,
         "held_outside_band": held_outside_band,
+        "held_low_quality": held_low_quality,
     }
 
 
@@ -307,6 +312,24 @@ def _send_section_to_make(st: Any, df: pd.DataFrame, key: str) -> None:
             f"🧭 حُجز {len(_held)} منتجاً عن الإرسال — سعره خارج نطاق سياج v1 "
             "(80%-120% من وسيط السوق) — يحتاج تجاوزاً مسجَّلاً أو مراجعة يدوية."
         )
+    # م4: ما حجزته بوّابة الأهلية (ثقة/توفّر/حداثة) — طابور مستقل **قابل للمراجعة**
+    # لا مجرّد عدّاد: الحجب بلا رؤية يتحوّل إلى فقدان منتجات بصمت.
+    _held_q = result.get("held_low_quality") or []
+    if _held_q:
+        st.warning(
+            f"🔎 حُجز {len(_held_q)} منتجاً عن الإرسال — الدليل الذي بُني عليه القرار "
+            "ضعيف (ثقة مطابقة منخفضة، أو كل عروض المنافسين نافدة، أو بيانات قديمة)."
+        )
+        with st.expander(f"عرض الـ{len(_held_q)} منتجاً المحجوزة وأسبابها", expanded=False):
+            st.dataframe(
+                pd.DataFrame([{
+                    "المنتج": str(r.get("name") or r.get("comp_name") or ""),
+                    "السعر": r.get("price"),
+                    "ثقة المطابقة": r.get("match_score"),
+                    "سبب الحجز": str(r.get("blocked_reason") or ""),
+                } for r in _held_q if isinstance(r, dict)]),
+                use_container_width=True, hide_index=True,
+            )
     # إظهار سبب الرفض الحقيقي من Make (response.text) بدل الصمت.
     if result.get("errors"):
         st.error("سبب الرفض من Make: " + " | ".join(result["errors"]))

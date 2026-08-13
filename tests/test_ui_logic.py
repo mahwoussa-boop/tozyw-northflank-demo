@@ -281,7 +281,7 @@ def test_send_in_batches_aggregates() -> None:
     )
     assert out == {
         "success": True, "sent": 5, "accepted": 0, "failed": 0, "total": 5, "errors": [],
-        "blocked_low_price": [], "held_outside_band": [],
+        "blocked_low_price": [], "held_outside_band": [], "held_low_quality": [],
     }
     assert [len(c) for c in svc.calls] == [2, 2, 1]
     assert svc.envelopes == ["products", "products", "products"]  # المظروف الافتراضي
@@ -295,7 +295,7 @@ def test_send_in_batches_retries_then_fails() -> None:
     )
     assert out == {
         "success": False, "sent": 0, "accepted": 0, "failed": 2, "total": 2, "errors": ["500"],
-        "blocked_low_price": [], "held_outside_band": [],
+        "blocked_low_price": [], "held_outside_band": [], "held_low_quality": [],
     }
     assert len(svc.calls) == 3
 
