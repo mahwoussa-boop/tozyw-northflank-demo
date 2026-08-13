@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
@@ -449,7 +450,6 @@ class AppState:
             self._snapshot_restored = True
             return True
         except Exception:
-            import logging
             logging.getLogger("state_manager").exception("persist_results فشل حفظ اللقطة")
             return False
 
@@ -504,6 +504,7 @@ class AppState:
         wanted = set(self._snapshot_frames) if keys is None else set(keys)
         dirpath = _snapshot_dir()
         loaded_any = False
+        lost: list[str] = []
         for key in wanted:
             if key in self._loaded_snapshot_frames:
                 continue
@@ -512,11 +513,18 @@ class AppState:
                 continue
             fpath = os.path.join(dirpath, str(fname))
             if not os.path.exists(fpath):
+                lost.append(str(fname))
                 continue
             try:
                 with open(fpath, "r", encoding="utf-8") as handle:
                     frame = pd.read_json(io.StringIO(handle.read()), orient="split")
             except Exception:
+                # تخطّي إطار تالف بصمت يعني لوحةً تبدو أصغر لا معطوبة،
+                # وهذا أخطر من الفشل الصريح لأنه لا يترك أثراً للتشخيص.
+                lost.append(str(fname))
+                logging.getLogger("state_manager").exception(
+                    "تعذّرت قراءة إطار اللقطة %s", fname,
+                )
                 continue
             if key == "our_catalog":
                 self.our_catalog = frame
@@ -529,6 +537,12 @@ class AppState:
             self._loaded_snapshot_frames.add(key)
             self._frame_fp[key] = _frame_fingerprint(frame)
             loaded_any = True
+        if lost:
+            logging.getLogger("state_manager").warning(
+                "لقطة ناقصة: %d إطاراً من %d غير مقروء (%s) — "
+                "اللوحة ستعرض أقل ممّا حُفظ",
+                len(lost), len(wanted), "، ".join(lost[:5]),
+            )
         return loaded_any
 
     def _restore_v3(self, *, eager: bool = True) -> bool:
@@ -543,6 +557,18 @@ class AppState:
             files = {
                 str(key): str(fname) for key, fname in (meta.get("frames") or {}).items()
             }
+            # يبقى التحميل كسولاً، لكن الملف المفقود يُسجّل فور قراءة الفهرس؛
+            # وإلا ظهرت اللوحة ناقصة بلا أيّ أثر تشخيصي إن لم يفتح المستخدم القسم.
+            missing = [
+                fname for fname in files.values()
+                if not os.path.exists(os.path.join(dirpath, fname))
+            ]
+            if missing:
+                logging.getLogger("state_manager").warning(
+                    "لقطة ناقصة: %d إطاراً من %d مفقود (%s) — "
+                    "اللوحة ستعرض أقل ممّا حُفظ",
+                    len(missing), len(files), "، ".join(missing[:5]),
+                )
             has_sections = any(key.startswith("sections.") for key in files)
             if not has_sections and not (meta.get("sections_other") or {}):
                 return False
@@ -571,6 +597,9 @@ class AppState:
                 self._reconcile_section_counts()
             return True
         except Exception:
+            logging.getLogger("state_manager").exception(
+                "تعذّرت استعادة لقطة صيغة 3 من %s", dirpath,
+            )
             return False
 
     def _restore_legacy(self) -> bool:

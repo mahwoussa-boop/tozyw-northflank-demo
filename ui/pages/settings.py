@@ -13,27 +13,52 @@ from typing import Any, Optional
 from ui.state_manager import AppState
 
 
-def _read_env() -> dict[str, str]:
-    """يقرأ المتغيرات من .env إن وُجد."""
+def _image_env_path():
+    """‏.env المرفق بالصورة — قيم افتراضية تُقرأ ولا يُكتب إليها في النشر."""
+    from pathlib import Path
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
+def _persistent_env_path():
+    """‏.env على الحجم الدائم، أو نفس ملف الصورة عند التطوير المحلي.
+
+    جذر التطبيق داخل الحاوية (``/app``) يُستبدل مع كل نشر، فالكتابة إليه تعني
+    ضياع إعدادات المالك في كل مرة. ``DATA_DIR`` هو ما يبقى (``/data`` على
+    Northflank)، فهو موضع الحفظ متى كان مضبوطاً.
+    """
     import os
     from pathlib import Path
+    data_dir = (os.environ.get("DATA_DIR") or "").strip()
+    return Path(data_dir) / ".env" if data_dir else _image_env_path()
+
+
+def _parse_env_file(path) -> dict[str, str]:
     env: dict[str, str] = {}
-    env_file = Path(__file__).resolve().parents[2] / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                env[k.strip()] = v.strip().strip('"').strip("'")
+    if not path.exists():
+        return env
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    return env
+
+
+def _read_env() -> dict[str, str]:
+    """قيم الصورة أولاً، ثم يعلوها ما حفظه المالك على الحجم الدائم."""
+    env = _parse_env_file(_image_env_path())
+    persistent = _persistent_env_path()
+    if persistent != _image_env_path():
+        env.update(_parse_env_file(persistent))
     return env
 
 
 def _save_env(updates: dict[str, str]) -> bool:
-    """يحفّظ التحديثات في .env."""
+    """يحفّظ التحديثات في ‎.env الدائم (على الحجم متى وُجد)."""
     import os
-    from pathlib import Path
-    env_file = Path(__file__).resolve().parents[2] / ".env"
+    env_file = _persistent_env_path()
     try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = []
         if env_file.exists():
             lines = env_file.read_text(encoding="utf-8").splitlines()
@@ -186,9 +211,15 @@ def render(state: AppState, *, container: Optional[Any] = None) -> None:
     if submitted:
         if all_updates:
             if _save_env(all_updates):
-                st.success("✅ تم حفظ الإعدادات — أعد تحميل التطبيق (F5) لتطبيقها")
+                # حاوية الاعتماديات مخزَّنة بـ``st.cache_resource`` وتُبنى مرّة واحدة
+                # لكل خادم، فإعادة تحميل الصفحة وحدها **لا** تُعيد بناء خدمات الذكاء
+                # بالمفاتيح الجديدة. تفريغ الكاش هنا يجعل الحفظ يسري فعلاً لا وعداً.
+                st.cache_resource.clear()
+                st.success(f"✅ حُفظت الإعدادات في {_persistent_env_path()} وسرت فوراً")
             else:
-                st.error("❌ تعذّر حفظ الإعدادات — تحقق من صلاحيات الكتابة")
+                st.error(
+                    f"❌ تعذّرت الكتابة في {_persistent_env_path()} — تحقّق من الصلاحيات"
+                )
         else:
             st.info("ℹ️ لم تُدخل أي تغييرات")
 
