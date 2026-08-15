@@ -10,6 +10,10 @@ __pycache__/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+# قاعدة SQLite الدائمة لا تدخل الصورة؛ استبعد ملفاتها الجانبية أيضاً.
+data/*.db-*
+data/*.sqlite-*
+data/*.sqlite3-*
 data/backups/
 data/uploads/
 ui_session/
