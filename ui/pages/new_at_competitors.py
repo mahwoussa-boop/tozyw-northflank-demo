@@ -31,6 +31,11 @@ from ui.state_manager import AppState, row_image_url
 _NEW = "#10B981"   # لون «جديد»
 _OOS = "#EF4444"   # لون «نفذت»
 
+# تجهيز 10k صف ثم تجميعها ومطابقتها كان يخلق ذروة ذاكرة فوق 1 GiB عند فتح
+# الصفحة في الحاوية الصغيرة. هذا سقف عرض فقط؛ البيانات الكاملة تبقى في SQLite.
+# لا يُرفع قبل قياس حيّ للذاكرة على خطة الخدمة الفعلية.
+_FEED_ROW_LIMIT = 1500
+
 _PERIODS = {
     "🆕 منذ آخر كشطة": None,
     "آخر 3 أيام": 3,
@@ -432,12 +437,16 @@ def render(state: AppState, scraper: ScraperService) -> None:
             # هـ1-تابع: فرع «منذ آخر كشطة» الافتراضي كان JOIN حيّاً ثقيلاً (~9-12s)
             # على 430k صف؛ يُقرأ الآن من كاش مُعاد بناؤه وقت الكشط (رجوع آمن للحيّ
             # إن غاب الكاش — انظر new_products_cached).
-            rows = scraper.new_products_cached(competitor=competitor, limit=10000)
+            rows = scraper.new_products_cached(
+                competitor=competitor, limit=_FEED_ROW_LIMIT,
+            )
         else:
-            rows = scraper.new_products(competitor=competitor, since_days=since_days, limit=10000)
+            rows = scraper.new_products(
+                competitor=competitor, since_days=since_days, limit=_FEED_ROW_LIMIT,
+            )
     else:
         period_label = ""
-        rows = scraper.out_of_stock(competitor=competitor, limit=10000)
+        rows = scraper.out_of_stock(competitor=competitor, limit=_FEED_ROW_LIMIT)
 
     if scraper.query_error:
         st.error(scraper.query_error)
@@ -451,11 +460,18 @@ def render(state: AppState, scraper: ScraperService) -> None:
     if mode == "new":
         n_new = len(rows)
     else:
-        n_new = len(scraper.new_products(competitor=competitor, limit=10000))
+        n_new = len(
+            scraper.new_products_cached(competitor=competitor, limit=_FEED_ROW_LIMIT)
+        )
     if scraper.query_error:
         st.error(scraper.query_error)
         return
     st.markdown(_ctrl_bar(n_new, n_oos), unsafe_allow_html=True)
+    if len(rows) == _FEED_ROW_LIMIT:
+        st.caption(
+            f"لحماية ذاكرة الخدمة، يعرض القسم أول {_FEED_ROW_LIMIT:,} صف فقط. "
+            "يمكن استخدام فلتر المنافس أو الفترة لتضييق النتائج."
+        )
 
     # CSS البطاقة المُثبَتة (كل تشغيلة — يضمن العرض الصحيح RTL)
     st.markdown(comparison_card_css(), unsafe_allow_html=True)
