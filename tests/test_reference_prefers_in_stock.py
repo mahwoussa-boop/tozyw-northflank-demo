@@ -166,3 +166,54 @@ def test_confirmed_same_line_offer_remains_eligible_for_pricing(_avail):
     assert row["سعر_المنافس"] == 110.0
     assert row["القرار"] == "🔴 سعر أعلى"
     assert row["ملاحظة_المرجع"] == ""
+
+
+def _named_cand(name: str, score: float = 96.0, price: float = 110.0) -> dict:
+    return {
+        "name": name, "score": score, "price": price,
+        "product_id": "named-ref", "brand": "دو", "size": 100, "type": "EDT",
+        "gender": "", "competitor": "مرجع اختبار", "product_url": _LIVE,
+    }
+
+
+def test_different_molecule_version_is_not_a_pricing_reference(_avail):
+    """Molecule 03 يجب ألا يسعّر من Escentric 03 رغم التشابه النصي العالي."""
+    wrong = _named_cand("عطر إسكينتريك موليكيولز إسكينتريك 03 او دو تواليت للجنسين 100 مل", 94.8)
+    row = eng._row(
+        "عطر إسكينتريك موليكيولز موليكيول 03 أو دو تواليت 100 مل",
+        129.0, "p-molecule-03", "دو", 100, "EDT", "", best=wrong, all_cands=[wrong],
+    )
+    assert row["القرار"].startswith("⚠️ تحت المراجعة")
+    assert row["ملاحظة_المرجع"] == "لا يوجد مرجع سعري مؤكد — تحت المراجعة"
+
+
+def test_different_escentric_version_is_not_a_pricing_reference(_avail):
+    """Escentric 05 يجب ألا يسعّر من Escentric 03."""
+    wrong = _named_cand("عطر إسكينتريك موليكيولز إسكينتريك 03 او دو تواليت للجنسين 100 مل", 90.0)
+    row = eng._row(
+        "عطر اسنترك موليكيولز اسنتريك 05 أو دو تواليت 100 مل",
+        129.0, "p-escentric-05", "دو", 100, "EDT", "", best=wrong, all_cands=[wrong],
+    )
+    assert row["القرار"].startswith("⚠️ تحت المراجعة")
+
+
+def test_missing_competitor_product_line_is_not_a_pricing_reference(_avail):
+    """مرجع بلا خط منتج لا يمر تلقائياً لمنتج ذي خط معروف."""
+    wrong = _named_cand("عطر جيرلان هوم - 100 مل", 88.6, 90.0)
+    wrong["brand"] = "Guerlain"
+    row = eng._row(
+        "عطر جيرلان لو هوم أيديال أو دو كولون 100مل",
+        129.0, "p-guerlain", "Guerlain", 100, "EDC", "", best=wrong, all_cands=[wrong],
+    )
+    assert row["القرار"].startswith("⚠️ تحت المراجعة")
+
+
+def test_same_escentric_version_remains_eligible(_avail):
+    """Escentric 03 المطابق يبقى مؤهلاً بعد تشديد البوابة."""
+    exact = _named_cand("عطر إسكينتريك موليكيولز إسكينتريك 03 او دو تواليت للجنسين 100 مل", 96.0, 110.0)
+    row = eng._row(
+        "عطر إسكينتريك موليكيولز إسكينتريك 03 أو دو تواليت 100 مل",
+        129.0, "p-escentric-03", "دو", 100, "EDT", "", best=exact, all_cands=[exact],
+    )
+    assert row["سعر_المنافس"] == 110.0
+    assert row["القرار"] == "🔴 سعر أعلى"

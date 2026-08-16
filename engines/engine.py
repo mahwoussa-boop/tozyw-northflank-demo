@@ -1209,6 +1209,17 @@ def extract_product_line(text, brand=""):
         n = n.replace(k, v)
     return re.sub(r'\s+', ' ', n).strip()
 
+
+def _pricing_variant_tokens(text):
+    """Return explicit product-variant markers, excluding commercial sizes."""
+    if not isinstance(text, str):
+        return frozenset()
+    normalized = text.lower().replace(',', ' ').replace('-', ' ')
+    # Version markers are identity-bearing; commercial sizes are excluded.
+    all_numbers = set(re.findall(r'(?<!\d)(\d{1,2})(?!\d)', normalized))
+    size_numbers = set(re.findall(r'(\d{1,3})\s*(?:ml|مل|mL|g|جرام|غرام)\b', normalized))
+    return frozenset(all_numbers - size_numbers)
+
 def is_sample(t):
     return isinstance(t, str) and any(k in t.lower() for k in REJECT_KEYWORDS)
 
@@ -2534,9 +2545,20 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
             return False
         _cand_brand = str(cand.get("brand", "") or brand or "")
         _cand_reference_line = extract_product_line(_cand_name, _cand_brand)
+        # If one side has a product line and the other does not, identity is not
+        # established strongly enough for an automatic price decision.
+        if bool(_our_reference_line) != bool(_cand_reference_line):
+            return False
         if _our_reference_line and _cand_reference_line:
-            if fuzz.token_set_ratio(_our_reference_line, _cand_reference_line) < 70:
+            # token_set_ratio ignores the distinguishing token when the rest is
+            # shared (e.g. Molecule 03 vs Escentric 03). Keep the stricter order-
+            # sensitive score for the pricing gate only.
+            if fuzz.token_sort_ratio(_our_reference_line, _cand_reference_line) < 85:
                 return False
+        _our_variants = _pricing_variant_tokens(product)
+        _cand_variants = _pricing_variant_tokens(_cand_name)
+        if _our_variants and _cand_variants and _our_variants != _cand_variants:
+            return False
         return True
 
     _pricing_eligible = [c for c in _priced_all if _pricing_reference_ok(c)]
