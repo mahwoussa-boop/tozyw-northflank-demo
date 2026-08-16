@@ -453,16 +453,13 @@ def render(state: AppState, scraper: ScraperService) -> None:
         return
 
     # ── عدّادات الشريط (تعكس فلتر المنافس) ──
-    # OOS: عدّاد صادق بـ COUNT مباشر — العدد الحقيقي (لا يُقتطع عند 10000) وبلا
-    # materialize ثقيل. (عدّاد «الجديد» يبقى len لأن كلفته الاستعلامُ الفرعي المرتبط
-    # الذي يُعالَج في كتلة لاحقة — تحويله لـ COUNT لا يسرّعه.)
+    # كلا العدّادين يعملان بـ COUNT؛ لا نحمّل قائمة كبيرة لمجرد معرفة حجمها.
+    # قائمة العرض تبقى مقيدة بـ _FEED_ROW_LIMIT لحماية ذاكرة الجلسة.
     n_oos = scraper.out_of_stock_count(competitor=competitor)
     if mode == "new":
         n_new = len(rows)
     else:
-        n_new = len(
-            scraper.new_products_cached(competitor=competitor, limit=_FEED_ROW_LIMIT)
-        )
+        n_new = scraper.new_products_count(competitor=competitor)
     if scraper.query_error:
         st.error(scraper.query_error)
         return
