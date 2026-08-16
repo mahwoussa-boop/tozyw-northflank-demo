@@ -647,7 +647,14 @@ class ScraperService:
         rows = self._query("SELECT DISTINCT competitor FROM competitor_products_store ORDER BY competitor")
         return [str(r["competitor"]) for r in rows if r.get("competitor")]
 
-    def new_products(self, competitor: Optional[str] = None, since_days: Optional[int] = None, limit: int = 500) -> list[dict[str, Any]]:
+    def _new_products_predicate(
+        self, competitor: Optional[str] = None, since_days: Optional[int] = None,
+    ) -> tuple[str, list[str], list[Any]]:
+        """شرط «الجديد» المشترك بين القائمة والعدّاد.
+
+        أي تعديل في تعريف «جديد» يسري على الاثنين معًا، فلا يعرض الشريط رقمًا
+        لا تفسره القائمة. يبقى التحقيق الكامل محصورًا في استعلام COUNT للعدّاد.
+        """
         where = ["cps.price > 0", "cps.availability != 0"]
         params: list[Any] = []
         join = ""
@@ -660,15 +667,30 @@ class ScraperService:
         else:
             has_runs = self._query("SELECT 1 FROM scrape_runs LIMIT 1")
             if has_runs:
-                # JOIN على تجميع يُحسب مرة واحدة (~484 صف) بدل استعلام مرتبط يُقيَّم
-                # لكل صف من ~176k (قياس 2026-07-09: 4.9s ⇒ 0.25s بنتائج متطابقة).
-                # منافس بلا سجل كشط يُستبعد في الحالتين (NULL/لا-تطابق) — السلوك محفوظ.
+                # JOIN على تجميع يُحسب مرة واحدة بدل استعلام مرتبط لكل صف.
+                # منافس بلا سجل كشط يُستبعد في الحالتين (NULL/لا-تطابق).
                 join = (" JOIN (SELECT competitor, MAX(run_at) AS last_run"
                         " FROM scrape_runs GROUP BY competitor) lr"
                         " ON lr.competitor = cps.competitor")
                 where.append("cps.first_seen_at >= lr.last_run")
             else:
                 where.append("cps.first_seen_at >= datetime('now','localtime','-7 days')")
+        return join, where, params
+
+    def new_products_count(
+        self, competitor: Optional[str] = None, since_days: Optional[int] = None,
+    ) -> int:
+        """يعيد عدد المنتجات الجديدة الحقيقي عبر COUNT(*) بلا بناء صفوف في الذاكرة."""
+        join, where, params = self._new_products_predicate(competitor, since_days)
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM competitor_products_store cps"
+            f"{join} WHERE {' AND '.join(where)}",
+            tuple(params),
+        )
+        return int(rows[0]["n"]) if rows else 0
+
+    def new_products(self, competitor: Optional[str] = None, since_days: Optional[int] = None, limit: int = 500) -> list[dict[str, Any]]:
+        join, where, params = self._new_products_predicate(competitor, since_days)
         sql = (
             "SELECT cps.competitor, cps.product_name, cps.price, cps.image_url,"
             " cps.product_url, cps.brand, cps.first_seen_at"
