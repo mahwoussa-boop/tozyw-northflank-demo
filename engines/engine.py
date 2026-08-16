@@ -2781,7 +2781,7 @@ def match_single_product(
 #  التحليل الكامل — v21 الهجين الفائق السرعة
 # ═══════════════════════════════════════════════════════
 def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
-                      ledger=None):
+                      ledger=None, memory_callback=None):
     """
     1. بناء CompIndex لكل منافس (تطبيع مسبق)
     2. لكل منتجنا → search vectorized
@@ -2802,6 +2802,18 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
         REJECTED_LOW_CONFIDENCE, ERROR,
     )
     _led = ledger if ledger is not None else NullLedger()
+
+    def _memory_checkpoint(stage, **metadata):
+        """يبث تشخيص ذاكرة اختياري؛ لا يغيّر المطابقة ولا يسمح بفشله بكسرها."""
+        if memory_callback is None:
+            return
+        try:
+            memory_callback(stage, **metadata)
+        except Exception:
+            import logging as _lg
+            _lg.getLogger("engines.engine").warning(
+                "memory checkpoint failed at %s", stage, exc_info=True,
+            )
 
     results = []
     audit_stats = {
@@ -2871,6 +2883,11 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
             )
 
     _subphase_timings["comp_index"] = round(_perf_counter() - _stage_started, 4)
+    _memory_checkpoint(
+        "after_comp_index",
+        competitors=int(len(indices)),
+        competitor_rows=int(sum(len(cdf) for cdf in comp_dfs.values())),
+    )
 
     def _cand_comp_id(cand):
         """Rebuild the ledger comp_id for a candidate returned by CompIndex."""
@@ -3000,6 +3017,19 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
             _apply_batch(items, fut.result())
         _in_flight.clear()
 
+    def _emit_progress(row_number):
+        """يوحّد تقدم الواجهة وعيّنة الذاكرة؛ الاستدعاء الدوري فقط يحمي I/O."""
+        if progress_callback:
+            progress_callback(row_number / total, results)
+        if memory_callback and (row_number % 500 == 0 or row_number == total):
+            _memory_checkpoint(
+                "candidate_matching",
+                catalog_processed=int(row_number),
+                result_rows=int(len(results)),
+                ai_batches_in_flight=int(len(_in_flight)),
+                ai_pending_items=int(len(pending)),
+            )
+
     def _cell_clean(r, col):
         if not col:
             return ""
@@ -3035,8 +3065,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 no=our_no,
                 score=0, مصدر_المطابقة="skipped_empty_name",
             ))
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         # v36: المجموعات/الأطقم لم تعد تُستبعَد قبل المطابقة — تمرّ إلى المطابقة
@@ -3054,8 +3083,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 no=our_no,
                 score=0, مصدر_المطابقة="skipped_micro_size",
             ))
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         our_price = 0.0
@@ -3115,8 +3143,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
             # Phase 0: no competitor matched our product at all — there is no
             # comp row to mark here; the sweep will handle untouched comp rows
             # at end-of-run. Nothing to do on the ledger side for this branch.
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         audit_stats["processed"] += 1
@@ -3139,8 +3166,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 _led.mark_state(_cid, REJECTED_LOW_CONFIDENCE,
                                 reason_code="below_match_threshold",
                                 last_score=float(best0.get("score") or 0))
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         if best0["score"] >= 85:  # ≥85% → مطابقة تلقائية مؤكدة (بطاقة)
@@ -3188,15 +3214,26 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                                     reason_code="under_review",
                                     last_score=float(best0.get("score") or 0))
 
-        if progress_callback:
-            progress_callback((i + 1) / total, results)
+        _emit_progress(i + 1)
 
     _subphase_timings["candidate_matching"] = round(_perf_counter() - _stage_started, 4)
+    _memory_checkpoint(
+        "before_ai_drain",
+        catalog_processed=int(total),
+        result_rows=int(len(results)),
+        ai_batches_in_flight=int(len(_in_flight)),
+        ai_pending_items=int(len(pending)),
+    )
     _stage_started = _perf_counter()
     _flush()
     _drain_pending()
     _ai_executor.shutdown(wait=True)
     _subphase_timings["ai_drain"] = round(_perf_counter() - _stage_started, 4)
+    _memory_checkpoint(
+        "after_ai_drain",
+        result_rows=int(len(results)),
+        ai_batches_in_flight=int(len(_in_flight)),
+    )
 
     # ── Phase 0: end-of-run ledger sweep + invariant check ───────────────
     _stage_started = _perf_counter()
@@ -3222,7 +3259,9 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
     # ── تنظيف الذاكرة بعد المعالجة الثقيلة ──────────────────────────────
     _subphase_timings["ledger_finalize"] = round(_perf_counter() - _stage_started, 4)
     _stage_started = _perf_counter()
+    _memory_checkpoint("before_result_materialization", result_rows=int(len(results)))
     _out = pd.DataFrame(results)
+    _memory_checkpoint("after_result_materialization", result_rows=int(len(_out)))
     del results
     del indices
     del pending
