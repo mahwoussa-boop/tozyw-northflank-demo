@@ -49,11 +49,21 @@ def test_empty_dataframe_returns_empty_sections() -> None:
     assert all(v == 0 for v in result.counts().values())
 
 
-def test_strict_raises_on_duplicate_overlap() -> None:
-    # قرار يبدأ 🔴 ويحوي «سعر أقل» ⇒ يظهر في قسمين ⇒ خرق حفظ البيانات
+def test_overlap_decision_no_longer_breaches_conservation() -> None:
+    """كان اسمه ``test_strict_raises_on_duplicate_overlap`` ويؤكّد أن قراراً يبدأ
+    بـ🔴 ويحوي «سعر أقل» يظهر في قسمين فيرفع ``DataLossError``.
+
+    ذلك وثّق **العطب** كسلوك متوقَّع: الازدواج كان يحدث فعلاً، والاختبار اكتفى
+    برصده بعد وقوعه. بعد فرض الحصرية (2026-08-16) لم يعد الازدواج ممكناً أصلاً،
+    فالصفّ يستقرّ في «سعر أعلى» وحده ولا خرق يقع — وهذا هو السلوك المطلوب.
+    ``DataLossError`` يبقى قائماً كحارس للمسارات الأخرى (يفحصه ``strict``).
+    """
     df = _df(["🔴 سعر أقل"])
-    with pytest.raises(DataLossError):
-        ClassificationService().classify(df, strict=True)
+    result = ClassificationService().classify(df, strict=True)
+
+    assert result.gap == 0
+    assert result.counts()["price_raise"] == 1
+    assert result.counts()["price_lower"] == 0
 
 
 def test_missing_column_is_tolerated() -> None:
@@ -108,3 +118,47 @@ def test_recover_dedupes_by_name_and_skips_blanks() -> None:
 def test_recover_handles_empty_inputs() -> None:
     assert recover_uncovered_catalog(None, _sections([]))[1] == 0
     assert recover_uncovered_catalog(pd.DataFrame(), _sections([]))[1] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  حراس انحدار: عطبا الحصرية والفهرس المكرّر (نُقلا من main، 2026-08-16)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_raise_decision_containing_lower_phrase_is_not_double_counted() -> None:
+    """قرار يبدأ بـ🔴 ويحوي «سعر أقل» كان يدخل القسمين معاً فيُعرَض ويُرسَل مرّتين."""
+    df = _df(["🔴 سعر أعلى — المنافس بسعر أقل بكثير", "✅ موافق"])
+    sections = split_results(df)
+
+    assert len(sections["price_raise"]) == 1
+    assert len(sections["price_lower"]) == 0, "الصفّ تسرّب إلى «سعر أقل» أيضاً"
+    total = sum(len(sections[k]) for k in
+                ("price_raise", "price_lower", "approved", "review", "excluded"))
+    assert total == len(df), f"مجموع الأقسام {total} ≠ عدد الصفوف {len(df)}"
+
+
+def test_duplicate_index_labels_do_not_swallow_undistributed_rows() -> None:
+    """الحارس المضاد: مع أوسمة فهرس مكرّرة كان صفٌّ غير مُوزَّع يختفي بصمت
+    بينما تبقى فجوة العدّ صفراً — فيمرّ من تحت assert_conservation."""
+    df = pd.DataFrame(
+        {"القرار": ["🔴 سعر أعلى", "قرار بلا بادئة معروفة"], "المنتج": ["p0", "p1"]},
+        index=[7, 7],  # وسم مكرّر — ينشأ من concat بلا ignore_index
+    )
+    sections = split_results(df)
+
+    total = sum(len(sections[k]) for k in
+                ("price_raise", "price_lower", "approved", "review", "excluded"))
+    assert total == len(df), f"اختفى صفّ بصمت: {total} ≠ {len(df)}"
+    # الصفّ غير المُوزَّع يجب أن يُلتقط في «مستبعد» لا أن يتبخّر
+    assert "قرار بلا بادئة معروفة" in set(sections["excluded"]["القرار"])
+
+
+def test_recover_uncovered_catalog_survives_duplicate_index() -> None:
+    """الاختيار الموضعي بدل .loc بالوسم: كتالوج بفهرس مكرّر لا يكسر الاسترداد."""
+    our_df = pd.DataFrame({"المنتج": ["a", "b", "b"]}, index=[3, 3, 9])
+    sections = {k: pd.DataFrame() for k in
+                ("price_raise", "price_lower", "approved", "review", "excluded")}
+
+    sections, recovered = recover_uncovered_catalog(our_df, sections)
+
+    assert recovered == 2, f"توقّعنا اسمين فريدين مستردّين، لا {recovered}"
+    assert set(sections["excluded"]["المنتج"]) == {"a", "b"}
