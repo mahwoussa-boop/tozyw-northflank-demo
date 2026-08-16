@@ -62,11 +62,20 @@ def test_full_pipeline_match_price_classify_conserved() -> None:
     assert split.counts()["review"] == 1              # 🔍 ⇒ مراجعة
 
 
-def test_run_analysis_raises_on_duplicate_overlap() -> None:
-    # قرار يبدأ 🔴 ويحوي «سعر أقل» ⇒ صفّ في قسمين ⇒ خرق حفظ البيانات
-    bad = pd.DataFrame({"القرار": ["🔴 سعر أقل"], "منتج_المنافس": ["x"], "السعر": [1]})
-    with pytest.raises(DataLossError):
-        run_analysis(build_container(), bad)
+def test_run_analysis_overlap_resolved_end_to_end() -> None:
+    """كان ``test_run_analysis_raises_on_duplicate_overlap``: يؤكّد أن قراراً
+    يبدأ بـ🔴 ويحوي «سعر أقل» يقع في قسمين فيرفع ``DataLossError``.
+
+    بعد فرض الحصرية (2026-08-16) لم يعد الازدواج ممكناً عبر المسار الكامل،
+    فالصفّ يستقرّ في «سعر أعلى» وحده والميزان مغلق. هذا الحارس يثبت أن
+    الإصلاح يصمد end-to-end لا في ``split_results`` وحدها.
+    """
+    row = pd.DataFrame({"القرار": ["🔴 سعر أقل"], "منتج_المنافس": ["x"], "السعر": [1]})
+    result, split, _missing = run_analysis(build_container(), row)
+
+    assert result.reconciliation.is_balanced
+    assert split.counts()["price_raise"] == 1
+    assert split.counts()["price_lower"] == 0
 
 
 def test_missing_integration_and_duplicate_guard() -> None:

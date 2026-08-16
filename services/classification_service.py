@@ -54,20 +54,39 @@ def split_results(
     dec = work[decision_col]
 
     # ── توزيع حصري بالبادئة (app.py:472-477) ──
-    price_raise = work[dec.str.startswith(_RAISE)]
-    price_lower = work[
-        dec.str.startswith(_LOWER)
-        | dec.str.contains(PRICE_LOWER_CONTAINS, na=False, regex=False)
-    ]
-    approved = work[dec.str.startswith(_APPROVED)]
-    review = work[dec.str.startswith(_REVIEW) | dec.str.startswith(_MISSING)]
-    excluded = work[dec.str.startswith(_EXCLUDED)]
+    # ⚠️ الحصرية كانت اسماً بلا مضمون: ``price_lower`` يطابق بالبادئة **أو**
+    # بـ``contains``، بينما البقية بالبادئة وحدها. فقرارٌ يبدأ بـ🔴 ويحوي
+    # عبارة «سعر أقل» كان يدخل price_raise وprice_lower معاً — يُعرَض مرّتين
+    # ويُرسَل مرّتين. الحصرية تُفرَض الآن صراحةً: من طابق قسماً سابقاً لا
+    # يُطابِق ما بعده، مع إبقاء ترتيب الأولوية كما هو.
+    masks = {
+        "price_raise": dec.str.startswith(_RAISE),
+        "price_lower": (
+            dec.str.startswith(_LOWER)
+            | dec.str.contains(PRICE_LOWER_CONTAINS, na=False, regex=False)
+        ),
+        "approved": dec.str.startswith(_APPROVED),
+        "review": dec.str.startswith(_REVIEW) | dec.str.startswith(_MISSING),
+        "excluded": dec.str.startswith(_EXCLUDED),
+    }
+    taken = pd.Series(False, index=work.index)
+    exclusive: dict[str, pd.DataFrame] = {}
+    for key, mask in masks.items():
+        mask = mask & ~taken
+        exclusive[key] = work[mask]
+        taken = taken | mask
+
+    price_raise = exclusive["price_raise"]
+    price_lower = exclusive["price_lower"]
+    approved = exclusive["approved"]
+    review = exclusive["review"]
+    excluded = exclusive["excluded"]
 
     # ── شبكة الأمان: أي منتج غير مُوزَّع → «مستبعد» (app.py:479-489) ──
-    distributed: set[int] = set()
-    for section in (price_raise, price_lower, approved, review, excluded):
-        distributed.update(section.index.tolist())
-    orphans = work[~work.index.isin(distributed)]
+    # ``taken`` قناع بمحاذاة الصفوف لا مجموعةَ أوسمة: المجموعة كانت تنهار عند
+    # تكرار وسم الفهرس، فيُحسب صفٌّ غير مُوزَّع «مُوزَّعاً» لأن توأمه وُزِّع —
+    # ويختفي من الأقسام كلها بصمت مع بقاء فجوة العدّ صفراً.
+    orphans = work[~taken]
     if not orphans.empty:
         excluded = pd.concat([excluded, orphans], ignore_index=False)
 
@@ -126,7 +145,10 @@ def recover_uncovered_catalog(
     uncovered_mask = (~names.isin(present)) & (names != "") & (names.str.lower() != "nan")
     uncovered = our_df[uncovered_mask].copy()
     # اسم واحد لكل منتج غير مُغطّى (المحرّك يجمّع بالاسم).
-    uncovered = uncovered.loc[~names[uncovered.index].duplicated()]
+    # ``.loc`` بوسم الفهرس ينهار عند تكرار الأوسمة (يُرجع صفوفاً غير مقصودة أو
+    # يرفع)؛ الاختيار الموضعي محصَّن ضد ذلك ويعطي النتيجة نفسها عند فهرس فريد.
+    uncovered_names = uncovered[ncol].astype(str).str.strip()
+    uncovered = uncovered.iloc[(~uncovered_names.duplicated()).to_numpy()]
     if uncovered.empty:
         return sections, 0
 
