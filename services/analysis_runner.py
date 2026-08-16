@@ -26,6 +26,7 @@
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
@@ -291,9 +292,28 @@ def _analysis_job(upload_path: str, filename: str, run_id: str) -> None:
             catalog_rows=int(len(our_df)),
             missing_rows=int(len(missing_df)),
         )
-        sections, result, missing_clean, astats = run_pricing_analysis(
-            container, our_df, missing_df=missing_df, memory_callback=_memory_sample,
-        )
+        # لا تحتاج المطابقة المفقودات حتى تعود نتائجها إلى bootstrap للتنقية.
+        # تفريغها في ملف مؤقت يقلل تداخلها مع كامل كتالوج المنافسين ولا يغيرها.
+        os.makedirs(_LOGS_DIR, exist_ok=True)
+        missing_spill_path = _LOGS_DIR / f"missing_spill_{run_id}.pkl"
+        missing_df.to_pickle(missing_spill_path)
+        missing_rows = int(len(missing_df))
+        del missing_df
+        gc.collect()
+        _memory_sample("after_missing_spill_release", missing_rows=missing_rows)
+        try:
+            sections, result, missing_clean, astats = run_pricing_analysis(
+                container,
+                our_df,
+                missing_df=None,
+                missing_spill_path=str(missing_spill_path),
+                memory_callback=_memory_sample,
+            )
+        finally:
+            try:
+                missing_spill_path.unlink()
+            except FileNotFoundError:
+                pass
         _memory_sample(
             "after_pricing_analysis",
             result_total=int(getattr(result, "total", 0) or 0),

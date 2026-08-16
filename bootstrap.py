@@ -355,6 +355,7 @@ def run_pricing_analysis(
     use_ai: Optional[bool] = None,
     use_cache: bool = True,
     missing_df: Optional[pd.DataFrame] = None,
+    missing_spill_path: Optional[str] = None,
     memory_callback: Optional[Any] = None,
 ) -> tuple[dict[str, pd.DataFrame], AnalysisResult, Optional[pd.DataFrame], dict[str, Any]]:
     """التحليل السعري الكامل: المحرّك → تصنيف → تنقية المفقودات → تدقيق → نتيجة.
@@ -422,8 +423,20 @@ def run_pricing_analysis(
         audit_stats["cached"] = False
         audit_stats["competitors"] = len(comp_dfs)
         _memory_checkpoint("after_matching_engine", result_rows=int(len(results_df)))
+        # جميع استهلاكات المنافسين الثقيلة انتهت؛ لا نُبقي DataFrames وفهارسها
+        # حية بينما نعيد استرداد المفقودات لغرض التنقية اللاحق.
+        del comp_dfs
+        import gc
+        gc.collect()
+        _memory_checkpoint("after_competitor_release")
         if use_cache and signature:
             save_cache(cache_path, signature, results_df)
+
+    # يستعمل المشغّل ملفاً مؤقتاً فقط في التشغيل البارد الكبير: تُسترد المفقودات
+    # بعد أن يحرر المحرك منافسيه، وبنفس DataFrame الذي كان يمرر سابقاً مباشرةً.
+    if missing_df is None and missing_spill_path:
+        missing_df = pd.read_pickle(missing_spill_path)
+        _memory_checkpoint("after_missing_reload", missing_rows=int(len(missing_df)))
 
     # ── تصنيف ثم تنقية المفقودات من المطابَق سعرياً (مصدر الحقيقة الحاسم) ──
     from services.audit_service import dedup_missing_vs_matched

@@ -55,9 +55,12 @@ def _fake_pipeline(monkeypatch, fail_at: str | None = None):
     sections = {"approved": pd.DataFrame({"المنتج": ["أ"]})}
     result = AnalysisResult(total=2)
 
-    def _pricing(c, df, missing_df=None, memory_callback=None):
+    def _pricing(c, df, missing_df=None, missing_spill_path=None, memory_callback=None):
         if fail_at == "matching":
             raise RuntimeError("boom-matching")
+        assert missing_df is None
+        assert missing_spill_path is not None
+        assert pd.read_pickle(missing_spill_path).equals(missing)
         if memory_callback is not None:
             memory_callback("fake_pricing", result_rows=1)
         return sections, result, missing, {"catalog_recovered": 0, "cached": True}
@@ -150,10 +153,16 @@ def test_phase_timings_visible_during_run_not_only_at_end(tmp_paths, monkeypatch
     import bootstrap as bs
     real_pricing = bs.run_pricing_analysis
 
-    def _spy(c, df, missing_df=None, memory_callback=None):
+    def _spy(c, df, missing_df=None, missing_spill_path=None, memory_callback=None):
         # عند هذه النقطة انتهى طورا loading_catalog وmissing وسُجّلا
         seen.append(dict((ar.read_progress() or {}).get("phase_timings") or {}))
-        return real_pricing(c, df, missing_df=missing_df, memory_callback=memory_callback)
+        return real_pricing(
+            c,
+            df,
+            missing_df=missing_df,
+            missing_spill_path=missing_spill_path,
+            memory_callback=memory_callback,
+        )
 
     monkeypatch.setattr(bs, "run_pricing_analysis", _spy)
     upload = tmp_paths / "up.xlsx"
@@ -176,9 +185,11 @@ def test_matching_memory_samples_are_visible_during_run(tmp_paths, monkeypatch):
     samples = final.get("matching_memory_samples")
     assert isinstance(samples, list)
     assert [sample["stage"] for sample in samples] == [
-        "before_pricing_analysis", "fake_pricing", "after_pricing_analysis",
+        "before_pricing_analysis", "after_missing_spill_release", "fake_pricing",
+        "after_pricing_analysis",
     ]
     assert all(sample["cgroup_memory_bytes"] == 123456 for sample in samples)
+    assert not list((tmp_paths / "logs").glob("missing_spill_*.pkl"))
     assert final["summary"]["total"] == 2  # نتيجة الخط لم تتغير
 
 
@@ -260,7 +271,9 @@ def test_next_estimate_uses_cold_run_not_cached_run(tmp_paths, monkeypatch):
     monkeypatch.setattr(bs, "run_v4_post_analysis", lambda c, s, r: None)
     monkeypatch.setattr("ui.reconcile.reconcile_state", lambda s: None)
 
-    def _cached_fast(c, df, missing_df=None, memory_callback=None):
+    def _cached_fast(c, df, missing_df=None, missing_spill_path=None, memory_callback=None):
+        assert missing_df is None
+        assert missing_spill_path is not None
         if memory_callback is not None:
             memory_callback("pricing_cache_hit", result_rows=1)
         return {}, AnalysisResult(total=1), pd.DataFrame(), {"cached": True}
