@@ -2509,17 +2509,52 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     def _ref_url_of(cand) -> str:
         return str(cand.get("product_url") or cand.get("url") or "").strip()
 
-    _priced = [c for c in ac if float(c.get("price", 0) or 0) > 0]
+    _priced_all = [c for c in ac if float(c.get("price", 0) or 0) > 0]
     _by_price = lambda c: float(c.get("price", 0) or 0)  # noqa: E731
-    _abs_cheapest = min(_priced, key=_by_price) if _priced else best
-    _in_stock = [c for c in _priced if _avail_lookup(_ref_url_of(c))[0] != _AV_OUT]
+
+    # بوابة المرجع السعري: المرشح 60–84% يبقى ظاهراً للمقارنة البشرية، لكنه لا
+    # يحق له اختيار سعر يغيّر قرار رفع/خفض/موافقة. كانت البطاقة تختار الأرخص من
+    # كل `ac` بعد أن يكون `best` ≥85، فيتسلل منتج شقيق منخفض الثقة كمرجع سعري.
+    # نستخدم نفس حد المطابقة المؤكدة للتسعير، لا لإنكار رؤية العروض الأخرى.
+    # درجة ≥85 شرط لازم وليست كافية: المرجع يجب أن يمر أيضاً فحص الحجم/الماركة
+    # وتصنيف الشكل التجاري (طقم/تستر/مفرد)، ثم تشابه خط المنتج حين يمكن استخراجه.
+    # هذا حارس fail-closed للقرار السعري فقط؛ العروض المخالفة لا تزال في البطاقة.
+    from engines.missing_products_engine import _structural_match as _struct_ok
+
+    _our_form = classify_product(product)
+    _our_reference_line = extract_product_line(product, brand)
+
+    def _pricing_reference_ok(cand):
+        if float(cand.get("score", 0) or 0) < REVIEW_MAX:
+            return False
+        _cand_name = str(cand.get("name", "") or "")
+        if not _struct_ok(_cand_name, product):
+            return False
+        if classify_product(_cand_name) != _our_form:
+            return False
+        _cand_brand = str(cand.get("brand", "") or brand or "")
+        _cand_reference_line = extract_product_line(_cand_name, _cand_brand)
+        if _our_reference_line and _cand_reference_line:
+            if fuzz.token_set_ratio(_our_reference_line, _cand_reference_line) < 70:
+                return False
+        return True
+
+    _pricing_eligible = [c for c in _priced_all if _pricing_reference_ok(c)]
+    _reference_confident = bool(_pricing_eligible)
+    _abs_cheapest = min(_pricing_eligible, key=_by_price) if _pricing_eligible else best
+    _in_stock = [c for c in _pricing_eligible if _avail_lookup(_ref_url_of(c))[0] != _AV_OUT]
     cheapest = min(_in_stock, key=_by_price) if _in_stock else _abs_cheapest
 
     # سطر سبب صريح: المالك يرى سعراً ليس هو الأرخص المعروض، فيجب أن يُقال لماذا.
-    if _in_stock and cheapest is not _abs_cheapest:
+    _all_abs_cheapest = min(_priced_all, key=_by_price) if _priced_all else best
+    if _pricing_eligible and _all_abs_cheapest is not _abs_cheapest:
+        _ref_note = "عروض منخفضة الثقة مستبعدة من مرجع السعر"
+    elif _in_stock and cheapest is not _abs_cheapest:
         _ref_note = "المرجع الأرخص نافد — قورن بأرخص متوفّر"
-    elif _priced and not _in_stock:
+    elif _pricing_eligible and not _in_stock:
         _ref_note = "كل العروض المطابقة نافدة — المقارنة تاريخية"
+    elif not _reference_confident:
+        _ref_note = "لا يوجد مرجع سعري مؤكد — تحت المراجعة"
     else:
         _ref_note = ""
 
@@ -2537,17 +2572,19 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     else:
         risk = "🟢 منخفض"
 
-    # حارس الرابط (خطوة ج): _link_ok=True افتراضياً — الحجب فقط حيث كان الفحص الهيكلي يعمل أصلاً.
-    _link_ok = True
+    # حارس الرابط: حتى صف المراجعة لا يعرض رابطاً لمنافس يثبت اختلافه هيكلياً.
+    # نبدأ بأفضل مرشح أصلي كي يبقى سلوك حجب الرابط السابق محفوظاً عندما لا
+    # يوجد مرجع تسعيري مؤهل.
+    _link_ok = True if override else _struct_ok(str(best.get("name", "") or ""), product)
 
-    # أعد حساب القرار بناءً على الأرخص
+    # أعد حساب القرار بناءً على الأرخص المؤهل فقط.
     if not override:
-        # score < NO_MATCH_THRESHOLD مُعالَج ومُرجَع أعلاه (السطر ~2333) → لا يصل هنا
-        if src in ("gemini", "auto") or score >= REVIEW_MAX:
-            # أ3 — بوابة التحقق الشديد: لا بطاقة إلا بعد فحص هيكلي (حجم/ماركة).
-            # يرفض فقط عند اختلاف حجم/ماركة مؤكّد، وإلّا يقبل (لا عقاب عند الغموض).
-            # استيراد محلي لتفادي أي استيراد دائري عند تحميل الوحدة.
-            from engines.missing_products_engine import _structural_match as _struct_ok
+        # حتى إن اختار AI مطابقة رمادية، لا يصبح السعر آلياً قبل أن يحمل المرجع
+        # نفسه درجة ≥85. هذا يفصل «ربما نفس المنتج» عن «مرجع يصلح لقرار سعر».
+        if not _reference_confident or score_display < REVIEW_MAX:
+            dec = f"⚠️ تحت المراجعة — مرجع منخفض الثقة ({score_display:.0f}%)"
+        else:
+            # أ3 — تأكيد نهائي للرابط؛ فحص المرجع نفسه نُفذ أعلاه قبل التسعير.
             _link_ok = _struct_ok(str(cheapest.get("name", "") or ""), product)
             if not _link_ok:
                 dec = f"⚠️ تحت المراجعة — اختلاف هيكلي ({score_display:.0f}%)"
