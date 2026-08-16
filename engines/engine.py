@@ -1921,6 +1921,9 @@ class CompIndex:
 
         # ⚡ v22: pre-compute non-sample set ONCE (was 108K×7928 calls)
         self._nonsample_set = frozenset(i for i, n in enumerate(self.raw_names) if not is_sample(n))
+        # كل الحقول اللازمة للبحث أصبحت قوائم مفهرسة؛ الاحتفاظ بـDataFrame
+        # الكامل يضاعف ذاكرة المنافسين بلا استعمال لاحق داخل CompIndex.
+        del self.df
 
     def search(self, our_norm, our_br, our_sz, our_tp, our_gd, our_pline="", top_n=6, our_price=0):
         """⚡ v31.8: بحث محسّن — ثوابت خارج الحلقة + pre-compiled regex"""
@@ -2781,7 +2784,7 @@ def match_single_product(
 #  التحليل الكامل — v21 الهجين الفائق السرعة
 # ═══════════════════════════════════════════════════════
 def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
-                      ledger=None, memory_callback=None):
+                      ledger=None, memory_callback=None, release_comp_dfs=False):
     """
     1. بناء CompIndex لكل منافس (تطبيع مسبق)
     2. لكل منتجنا → search vectorized
@@ -2882,12 +2885,24 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 "ledger ingest error for %s: %s", cname, _ie,
             )
 
+    _competitor_rows = int(sum(len(cdf) for cdf in comp_dfs.values()))
     _subphase_timings["comp_index"] = round(_perf_counter() - _stage_started, 4)
     _memory_checkpoint(
         "after_comp_index",
         competitors=int(len(indices)),
-        competitor_rows=int(sum(len(cdf) for cdf in comp_dfs.values())),
+        competitor_rows=_competitor_rows,
     )
+    if release_comp_dfs:
+        # bootstrap لا يحتاج DataFrames بعد اكتمال الفهرسة؛ إفراغ القاموس نفسه
+        # يحرر النسخ الأصلية قبل حلقة الكتالوج، بينما indices يحتفظ بالبيانات المطلوبة.
+        comp_dfs.clear()
+        try:
+            del cdf
+        except UnboundLocalError:
+            pass
+        import gc as _gc
+        _gc.collect()
+        _memory_checkpoint("after_comp_df_release", competitor_rows=_competitor_rows)
 
     def _cand_comp_id(cand):
         """Rebuild the ledger comp_id for a candidate returned by CompIndex."""

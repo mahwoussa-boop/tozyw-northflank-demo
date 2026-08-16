@@ -416,12 +416,17 @@ def run_pricing_analysis(
             sys.path.insert(0, str(PROJECT_ROOT))
         from engines.engine import run_full_analysis  # type: ignore  #PRESERVED_LOGIC
 
+        competitor_count = int(len(comp_dfs))
         results_df, audit_stats = run_full_analysis(
-            our_df, comp_dfs, use_ai=bool(use_ai), memory_callback=memory_callback,
+            our_df,
+            comp_dfs,
+            use_ai=bool(use_ai),
+            memory_callback=memory_callback,
+            release_comp_dfs=True,
         )
         audit_stats = dict(audit_stats or {})
         audit_stats["cached"] = False
-        audit_stats["competitors"] = len(comp_dfs)
+        audit_stats["competitors"] = competitor_count
         _memory_checkpoint("after_matching_engine", result_rows=int(len(results_df)))
         # جميع استهلاكات المنافسين الثقيلة انتهت؛ لا نُبقي DataFrames وفهارسها
         # حية بينما نعيد استرداد المفقودات لغرض التنقية اللاحق.

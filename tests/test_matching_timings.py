@@ -34,3 +34,26 @@ def test_matching_subphases_are_reported():
     ]
     assert memory_events[0][1]["competitors"] == 1
     assert memory_events[0][1]["competitor_rows"] == 1
+
+
+def test_release_comp_dfs_preserves_matching_result_and_clears_input():
+    """التحرير بعد CompIndex يحفظ المرشحين لكنه لا يبقي DataFrames الأصلية حية."""
+    our_df = pd.DataFrame({"اسم المنتج": ["Perfume Timing Alpha 100ml"], "السعر": [200.0]})
+    baseline_comp = {
+        "Store": pd.DataFrame({"اسم المنتج": ["Perfume Timing Alpha 100ml"], "السعر": [190.0]}),
+    }
+    baseline_result, baseline_audit = run_full_analysis(our_df, baseline_comp, use_ai=False)
+
+    releasable_comp = {
+        name: frame.copy(deep=True) for name, frame in baseline_comp.items()
+    }
+    released_result, released_audit = run_full_analysis(
+        our_df,
+        releasable_comp,
+        use_ai=False,
+        release_comp_dfs=True,
+    )
+
+    assert releasable_comp == {}
+    pd.testing.assert_frame_equal(baseline_result, released_result)
+    assert baseline_audit["processed"] == released_audit["processed"]
