@@ -305,6 +305,9 @@ def _analysis_job(upload_path: str, filename: str, run_id: str) -> None:
             sections, result, missing_clean, astats = run_pricing_analysis(
                 container,
                 our_df,
+                # التحليل المحروس هو بوابة إعادة حساب بارد؛ لا يجوز له
+                # استعادة pricing_cache حتى لو أُعيد بناؤه أثناء الإقلاع.
+                use_cache=False,
                 missing_df=None,
                 missing_spill_path=str(missing_spill_path),
                 memory_callback=_memory_sample,
