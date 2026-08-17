@@ -18,12 +18,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from conf.constants import COMPETITORS_FILE, COMPETITOR_DB_PATH, PROJECT_ROOT
 from core.exceptions import PricingError, RepositoryError
 from utils.data_paths import get_data_dir
 
 _STORE_ID_RE = re.compile(r"/stores/(\d+)")
+_LEGACY_MAHALLY_STORE_RE = re.compile(r"^/stores/(\d+)(?:/|$)", re.IGNORECASE)
+_MAHALLY_HOSTS = {"mahally.com", "www.mahally.com"}
 _SCRAPE_LOCK_TTL = 3 * 3600  # ثوانٍ — قفل أقدم من ذلك يُعدّ يتيماً فيُكسَر
 
 logger = logging.getLogger("scraper_service")
@@ -84,6 +87,40 @@ def extract_store_id(url: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _normalize_legacy_source(entry: dict[str, Any], source: object, store_id: int) -> tuple[str, int]:
+    """يطبع مخططاً قديماً في الذاكرة فقط إذا ثبتت هوية متجر Mahally.
+
+    بعض اللقطات القديمة استخدمت اسم قاعدة المنافسين (`pricing_v18.db`) مكان
+    قيمة ``source`` وأبقت معرّف Mahally فارغاً. لا يصح تحويل هذا السجل إلى
+    ``mahally`` إلا إذا كان الرابط نفسه يثبت نمط ``mahally.com/stores/<id>``.
+    السجل الغامض لا يُكتب ولا يُعاد تصنيفه؛ يسجّل سبب تجاوزه ويُترك خارج الكشط.
+    """
+    # غياب الحقل فقط يرث السلوك السابق؛ None أو النص الفارغ مصدر غير صالح.
+    if source is None:
+        return "", store_id
+    normalized = str(source).strip()
+    if not normalized:
+        return "", store_id
+    if Path(normalized).name != "pricing_v18.db":
+        return normalized, store_id
+
+    store_url = str(entry.get("store_url", "") or "")
+    parsed = urlparse(store_url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    path_match = _LEGACY_MAHALLY_STORE_RE.match(parsed.path or "")
+    recovered_id = int(path_match.group(1)) if hostname in _MAHALLY_HOSTS and path_match else None
+    if recovered_id:
+        return "mahally", recovered_id
+
+    logger.warning(
+        "legacy_source_ambiguous name=%r url=%r source=%r",
+        entry.get("name", ""), entry.get("store_url", ""), normalized,
+    )
+    # لا نمرر `pricing_v18.db` إلى router ولا نحتفظ بمعرّف قديم لم يثبت
+    # ارتباطه بنطاق Mahally؛ سيدفع sid=0 قائمة الكشط إلى تجاوز السجل بأمان.
+    return "mahally", 0
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  ScraperService المُحدّث
 # ═══════════════════════════════════════════════════════════════════════════
@@ -136,8 +173,13 @@ class ScraperService:
         """يسرد المتاجر المُعرَّفة. يمكن تصفية حسب المصدر."""
         out: list[Competitor] = []
         for entry in self._load_raw():
-            sid = entry.get("mahally_store_id", 0)
-            src = entry.get("source", "mahally")
+            raw_sid = entry.get("mahally_store_id", 0)
+            try:
+                sid = int(raw_sid) if raw_sid else 0
+            except (TypeError, ValueError):
+                sid = 0
+            raw_source = entry["source"] if "source" in entry else "mahally"
+            src, sid = _normalize_legacy_source(entry, raw_source, sid)
             if source and src != source:
                 continue
             if src == "mahally" and not sid:
@@ -145,7 +187,7 @@ class ScraperService:
             out.append(Competitor(
                 name=entry.get("name", f"store_{sid}"),
                 store_url=entry.get("store_url", ""),
-                mahally_store_id=int(sid) if sid else 0,
+                mahally_store_id=sid,
                 sitemap_url=entry.get("sitemap_url", ""),
                 source=src,
                 source_config=entry.get("source_config", {}),

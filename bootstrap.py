@@ -355,6 +355,8 @@ def run_pricing_analysis(
     use_ai: Optional[bool] = None,
     use_cache: bool = True,
     missing_df: Optional[pd.DataFrame] = None,
+    missing_spill_path: Optional[str] = None,
+    memory_callback: Optional[Any] = None,
 ) -> tuple[dict[str, pd.DataFrame], AnalysisResult, Optional[pd.DataFrame], dict[str, Any]]:
     """التحليل السعري الكامل: المحرّك → تصنيف → تنقية المفقودات → تدقيق → نتيجة.
 
@@ -386,26 +388,60 @@ def run_pricing_analysis(
     comp_fingerprint = competitor_content_fingerprint(db_path) if os.path.exists(db_path) else "0"
     signature = f"{PRICING_CACHE_VERSION}|{len(our_df)}|{comp_fingerprint}|{int(bool(use_ai))}"
 
+    def _memory_checkpoint(stage: str, **metadata: Any) -> None:
+        """يبث قياساً تشخيصياً اختيارياً؛ فشله لا يوقف التحليل أبداً."""
+        if memory_callback is None:
+            return
+        try:
+            memory_callback(stage, **metadata)
+        except Exception:
+            logger.warning("تعذّر بث قياس ذاكرة التحليل عند %s", stage, exc_info=True)
+
     results_df: Optional[pd.DataFrame] = (
         load_cache(cache_path, signature) if use_cache else None
     )
     audit_stats: dict[str, Any] = {}
     if results_df is not None:
         audit_stats = {"cached": True, "rows": len(results_df)}
+        _memory_checkpoint("pricing_cache_hit", result_rows=int(len(results_df)))
     else:
+        _memory_checkpoint("before_competitor_load")
         comp_dfs = load_competitor_dfs(db_path)
+        _memory_checkpoint(
+            "after_competitor_load",
+            competitors=int(len(comp_dfs)),
+            competitor_rows=int(sum(len(df) for df in comp_dfs.values())),
+        )
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
         from engines.engine import run_full_analysis  # type: ignore  #PRESERVED_LOGIC
 
+        competitor_count = int(len(comp_dfs))
         results_df, audit_stats = run_full_analysis(
-            our_df, comp_dfs, use_ai=bool(use_ai),
+            our_df,
+            comp_dfs,
+            use_ai=bool(use_ai),
+            memory_callback=memory_callback,
+            release_comp_dfs=True,
         )
         audit_stats = dict(audit_stats or {})
         audit_stats["cached"] = False
-        audit_stats["competitors"] = len(comp_dfs)
+        audit_stats["competitors"] = competitor_count
+        _memory_checkpoint("after_matching_engine", result_rows=int(len(results_df)))
+        # جميع استهلاكات المنافسين الثقيلة انتهت؛ لا نُبقي DataFrames وفهارسها
+        # حية بينما نعيد استرداد المفقودات لغرض التنقية اللاحق.
+        del comp_dfs
+        import gc
+        gc.collect()
+        _memory_checkpoint("after_competitor_release")
         if use_cache and signature:
             save_cache(cache_path, signature, results_df)
+
+    # يستعمل المشغّل ملفاً مؤقتاً فقط في التشغيل البارد الكبير: تُسترد المفقودات
+    # بعد أن يحرر المحرك منافسيه، وبنفس DataFrame الذي كان يمرر سابقاً مباشرةً.
+    if missing_df is None and missing_spill_path:
+        missing_df = pd.read_pickle(missing_spill_path)
+        _memory_checkpoint("after_missing_reload", missing_rows=int(len(missing_df)))
 
     # ── تصنيف ثم تنقية المفقودات من المطابَق سعرياً (مصدر الحقيقة الحاسم) ──
     from services.audit_service import dedup_missing_vs_matched

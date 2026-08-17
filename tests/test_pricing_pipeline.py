@@ -147,3 +147,37 @@ def test_run_pricing_analysis_dedups_matched_from_missing(temp_pricing_cache) ->
     # بعد التنقية لا تكرار ⇒ توازن سليم (هذا هو منطق app.py الحاسم)
     assert result.reconciliation.duplicate_count == 0
     assert result.reconciliation.is_balanced
+
+
+def test_run_pricing_analysis_reloads_spilled_missing_after_cached_pricing(
+    temp_pricing_cache, tmp_path,
+) -> None:
+    """المفقودات المسكوبة تُستعاد بنفس التنقية بعد اكتمال مسار التسعير."""
+    our_df = pd.DataFrame({"المنتج": ["a", "b"]})
+    shared = "عطر مشترك نادر 100 مل"
+    results = pd.DataFrame({
+        "القرار": ["🔴 سعر أعلى"], "منتج_المنافس": [shared],
+        "السعر": [300], "سعر_المنافس": [250],
+    })
+    _seed_pricing_cache(temp_pricing_cache, len(our_df), False, results)
+    spilled = pd.DataFrame({
+        "منتج_المنافس": [shared, "عطر آخر مفقود"],
+        "مستوى_الثقة": ["green", "review"],
+    })
+    spill_path = tmp_path / "missing.pkl"
+    spilled.to_pickle(spill_path)
+
+    container = build_container()
+    _sections, result, missing_clean, stats = run_pricing_analysis(
+        container,
+        our_df,
+        use_ai=False,
+        use_cache=True,
+        missing_df=None,
+        missing_spill_path=str(spill_path),
+    )
+
+    assert stats["missing_deduped"] == 1
+    assert list(missing_clean["منتج_المنافس"]) == ["عطر آخر مفقود"]
+    assert result.reconciliation.duplicate_count == 0
+    assert result.reconciliation.is_balanced

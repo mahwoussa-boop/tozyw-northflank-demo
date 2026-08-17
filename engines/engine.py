@@ -1209,6 +1209,17 @@ def extract_product_line(text, brand=""):
         n = n.replace(k, v)
     return re.sub(r'\s+', ' ', n).strip()
 
+
+def _pricing_variant_tokens(text):
+    """Return explicit product-variant markers, excluding commercial sizes."""
+    if not isinstance(text, str):
+        return frozenset()
+    normalized = text.lower().replace(',', ' ').replace('-', ' ')
+    # Version markers are identity-bearing; commercial sizes are excluded.
+    all_numbers = set(re.findall(r'(?<!\d)(\d{1,2})(?!\d)', normalized))
+    size_numbers = set(re.findall(r'(\d{1,3})\s*(?:ml|مل|mL|g|جرام|غرام)\b', normalized))
+    return frozenset(all_numbers - size_numbers)
+
 def is_sample(t):
     return isinstance(t, str) and any(k in t.lower() for k in REJECT_KEYWORDS)
 
@@ -1921,6 +1932,9 @@ class CompIndex:
 
         # ⚡ v22: pre-compute non-sample set ONCE (was 108K×7928 calls)
         self._nonsample_set = frozenset(i for i, n in enumerate(self.raw_names) if not is_sample(n))
+        # كل الحقول اللازمة للبحث أصبحت قوائم مفهرسة؛ الاحتفاظ بـDataFrame
+        # الكامل يضاعف ذاكرة المنافسين بلا استعمال لاحق داخل CompIndex.
+        del self.df
 
     def search(self, our_norm, our_br, our_sz, our_tp, our_gd, our_pline="", top_n=6, our_price=0):
         """⚡ v31.8: بحث محسّن — ثوابت خارج الحلقة + pre-compiled regex"""
@@ -2506,17 +2520,63 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     def _ref_url_of(cand) -> str:
         return str(cand.get("product_url") or cand.get("url") or "").strip()
 
-    _priced = [c for c in ac if float(c.get("price", 0) or 0) > 0]
+    _priced_all = [c for c in ac if float(c.get("price", 0) or 0) > 0]
     _by_price = lambda c: float(c.get("price", 0) or 0)  # noqa: E731
-    _abs_cheapest = min(_priced, key=_by_price) if _priced else best
-    _in_stock = [c for c in _priced if _avail_lookup(_ref_url_of(c))[0] != _AV_OUT]
+
+    # بوابة المرجع السعري: المرشح 60–84% يبقى ظاهراً للمقارنة البشرية، لكنه لا
+    # يحق له اختيار سعر يغيّر قرار رفع/خفض/موافقة. كانت البطاقة تختار الأرخص من
+    # كل `ac` بعد أن يكون `best` ≥85، فيتسلل منتج شقيق منخفض الثقة كمرجع سعري.
+    # نستخدم نفس حد المطابقة المؤكدة للتسعير، لا لإنكار رؤية العروض الأخرى.
+    # درجة ≥85 شرط لازم وليست كافية: المرجع يجب أن يمر أيضاً فحص الحجم/الماركة
+    # وتصنيف الشكل التجاري (طقم/تستر/مفرد)، ثم تشابه خط المنتج حين يمكن استخراجه.
+    # هذا حارس fail-closed للقرار السعري فقط؛ العروض المخالفة لا تزال في البطاقة.
+    from engines.missing_products_engine import _structural_match as _struct_ok
+
+    _our_form = classify_product(product)
+    _our_reference_line = extract_product_line(product, brand)
+
+    def _pricing_reference_ok(cand):
+        if float(cand.get("score", 0) or 0) < REVIEW_MAX:
+            return False
+        _cand_name = str(cand.get("name", "") or "")
+        if not _struct_ok(_cand_name, product):
+            return False
+        if classify_product(_cand_name) != _our_form:
+            return False
+        _cand_brand = str(cand.get("brand", "") or brand or "")
+        _cand_reference_line = extract_product_line(_cand_name, _cand_brand)
+        # If one side has a product line and the other does not, identity is not
+        # established strongly enough for an automatic price decision.
+        if bool(_our_reference_line) != bool(_cand_reference_line):
+            return False
+        if _our_reference_line and _cand_reference_line:
+            # token_set_ratio ignores the distinguishing token when the rest is
+            # shared (e.g. Molecule 03 vs Escentric 03). Keep the stricter order-
+            # sensitive score for the pricing gate only.
+            if fuzz.token_sort_ratio(_our_reference_line, _cand_reference_line) < 85:
+                return False
+        _our_variants = _pricing_variant_tokens(product)
+        _cand_variants = _pricing_variant_tokens(_cand_name)
+        if _our_variants and _cand_variants and _our_variants != _cand_variants:
+            return False
+        return True
+
+    _pricing_eligible = [c for c in _priced_all if _pricing_reference_ok(c)]
+    _reference_confident = bool(_pricing_eligible)
+    _abs_cheapest = min(_pricing_eligible, key=_by_price) if _pricing_eligible else best
+    _in_stock = [c for c in _pricing_eligible if _avail_lookup(_ref_url_of(c))[0] != _AV_OUT]
     cheapest = min(_in_stock, key=_by_price) if _in_stock else _abs_cheapest
 
     # سطر سبب صريح: المالك يرى سعراً ليس هو الأرخص المعروض، فيجب أن يُقال لماذا.
-    if _in_stock and cheapest is not _abs_cheapest:
+    _all_abs_cheapest = min(_priced_all, key=_by_price) if _priced_all else best
+    if _pricing_eligible and _all_abs_cheapest is not _abs_cheapest:
+        _ref_note = "عروض منخفضة الثقة مستبعدة من مرجع السعر"
+    elif _in_stock and cheapest is not _abs_cheapest:
         _ref_note = "المرجع الأرخص نافد — قورن بأرخص متوفّر"
-    elif _priced and not _in_stock:
+    elif _pricing_eligible and not _in_stock:
         _ref_note = "كل العروض المطابقة نافدة — المقارنة تاريخية"
+    elif not _reference_confident:
+        _ref_note = "لا يوجد مرجع سعري مؤكد — تحت المراجعة"
     else:
         _ref_note = ""
 
@@ -2534,17 +2594,19 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     else:
         risk = "🟢 منخفض"
 
-    # حارس الرابط (خطوة ج): _link_ok=True افتراضياً — الحجب فقط حيث كان الفحص الهيكلي يعمل أصلاً.
-    _link_ok = True
+    # حارس الرابط: حتى صف المراجعة لا يعرض رابطاً لمنافس يثبت اختلافه هيكلياً.
+    # نبدأ بأفضل مرشح أصلي كي يبقى سلوك حجب الرابط السابق محفوظاً عندما لا
+    # يوجد مرجع تسعيري مؤهل.
+    _link_ok = True if override else _struct_ok(str(best.get("name", "") or ""), product)
 
-    # أعد حساب القرار بناءً على الأرخص
+    # أعد حساب القرار بناءً على الأرخص المؤهل فقط.
     if not override:
-        # score < NO_MATCH_THRESHOLD مُعالَج ومُرجَع أعلاه (السطر ~2333) → لا يصل هنا
-        if src in ("gemini", "auto") or score >= REVIEW_MAX:
-            # أ3 — بوابة التحقق الشديد: لا بطاقة إلا بعد فحص هيكلي (حجم/ماركة).
-            # يرفض فقط عند اختلاف حجم/ماركة مؤكّد، وإلّا يقبل (لا عقاب عند الغموض).
-            # استيراد محلي لتفادي أي استيراد دائري عند تحميل الوحدة.
-            from engines.missing_products_engine import _structural_match as _struct_ok
+        # حتى إن اختار AI مطابقة رمادية، لا يصبح السعر آلياً قبل أن يحمل المرجع
+        # نفسه درجة ≥85. هذا يفصل «ربما نفس المنتج» عن «مرجع يصلح لقرار سعر».
+        if not _reference_confident or score_display < REVIEW_MAX:
+            dec = f"⚠️ تحت المراجعة — مرجع منخفض الثقة ({score_display:.0f}%)"
+        else:
+            # أ3 — تأكيد نهائي للرابط؛ فحص المرجع نفسه نُفذ أعلاه قبل التسعير.
             _link_ok = _struct_ok(str(cheapest.get("name", "") or ""), product)
             if not _link_ok:
                 dec = f"⚠️ تحت المراجعة — اختلاف هيكلي ({score_display:.0f}%)"
@@ -2781,7 +2843,7 @@ def match_single_product(
 #  التحليل الكامل — v21 الهجين الفائق السرعة
 # ═══════════════════════════════════════════════════════
 def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
-                      ledger=None):
+                      ledger=None, memory_callback=None, release_comp_dfs=False):
     """
     1. بناء CompIndex لكل منافس (تطبيع مسبق)
     2. لكل منتجنا → search vectorized
@@ -2802,6 +2864,18 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
         REJECTED_LOW_CONFIDENCE, ERROR,
     )
     _led = ledger if ledger is not None else NullLedger()
+
+    def _memory_checkpoint(stage, **metadata):
+        """يبث تشخيص ذاكرة اختياري؛ لا يغيّر المطابقة ولا يسمح بفشله بكسرها."""
+        if memory_callback is None:
+            return
+        try:
+            memory_callback(stage, **metadata)
+        except Exception:
+            import logging as _lg
+            _lg.getLogger("engines.engine").warning(
+                "memory checkpoint failed at %s", stage, exc_info=True,
+            )
 
     results = []
     audit_stats = {
@@ -2870,7 +2944,24 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 "ledger ingest error for %s: %s", cname, _ie,
             )
 
+    _competitor_rows = int(sum(len(cdf) for cdf in comp_dfs.values()))
     _subphase_timings["comp_index"] = round(_perf_counter() - _stage_started, 4)
+    _memory_checkpoint(
+        "after_comp_index",
+        competitors=int(len(indices)),
+        competitor_rows=_competitor_rows,
+    )
+    if release_comp_dfs:
+        # bootstrap لا يحتاج DataFrames بعد اكتمال الفهرسة؛ إفراغ القاموس نفسه
+        # يحرر النسخ الأصلية قبل حلقة الكتالوج، بينما indices يحتفظ بالبيانات المطلوبة.
+        comp_dfs.clear()
+        try:
+            del cdf
+        except UnboundLocalError:
+            pass
+        import gc as _gc
+        _gc.collect()
+        _memory_checkpoint("after_comp_df_release", competitor_rows=_competitor_rows)
 
     def _cand_comp_id(cand):
         """Rebuild the ledger comp_id for a candidate returned by CompIndex."""
@@ -3000,6 +3091,19 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
             _apply_batch(items, fut.result())
         _in_flight.clear()
 
+    def _emit_progress(row_number):
+        """يوحّد تقدم الواجهة وعيّنة الذاكرة؛ الاستدعاء الدوري فقط يحمي I/O."""
+        if progress_callback:
+            progress_callback(row_number / total, results)
+        if memory_callback and (row_number % 500 == 0 or row_number == total):
+            _memory_checkpoint(
+                "candidate_matching",
+                catalog_processed=int(row_number),
+                result_rows=int(len(results)),
+                ai_batches_in_flight=int(len(_in_flight)),
+                ai_pending_items=int(len(pending)),
+            )
+
     def _cell_clean(r, col):
         if not col:
             return ""
@@ -3035,8 +3139,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 no=our_no,
                 score=0, مصدر_المطابقة="skipped_empty_name",
             ))
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         # v36: المجموعات/الأطقم لم تعد تُستبعَد قبل المطابقة — تمرّ إلى المطابقة
@@ -3054,8 +3157,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 no=our_no,
                 score=0, مصدر_المطابقة="skipped_micro_size",
             ))
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         our_price = 0.0
@@ -3115,8 +3217,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
             # Phase 0: no competitor matched our product at all — there is no
             # comp row to mark here; the sweep will handle untouched comp rows
             # at end-of-run. Nothing to do on the ledger side for this branch.
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         audit_stats["processed"] += 1
@@ -3139,8 +3240,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                 _led.mark_state(_cid, REJECTED_LOW_CONFIDENCE,
                                 reason_code="below_match_threshold",
                                 last_score=float(best0.get("score") or 0))
-            if progress_callback:
-                progress_callback((i + 1) / total, results)
+            _emit_progress(i + 1)
             continue
 
         if best0["score"] >= 85:  # ≥85% → مطابقة تلقائية مؤكدة (بطاقة)
@@ -3188,15 +3288,26 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
                                     reason_code="under_review",
                                     last_score=float(best0.get("score") or 0))
 
-        if progress_callback:
-            progress_callback((i + 1) / total, results)
+        _emit_progress(i + 1)
 
     _subphase_timings["candidate_matching"] = round(_perf_counter() - _stage_started, 4)
+    _memory_checkpoint(
+        "before_ai_drain",
+        catalog_processed=int(total),
+        result_rows=int(len(results)),
+        ai_batches_in_flight=int(len(_in_flight)),
+        ai_pending_items=int(len(pending)),
+    )
     _stage_started = _perf_counter()
     _flush()
     _drain_pending()
     _ai_executor.shutdown(wait=True)
     _subphase_timings["ai_drain"] = round(_perf_counter() - _stage_started, 4)
+    _memory_checkpoint(
+        "after_ai_drain",
+        result_rows=int(len(results)),
+        ai_batches_in_flight=int(len(_in_flight)),
+    )
 
     # ── Phase 0: end-of-run ledger sweep + invariant check ───────────────
     _stage_started = _perf_counter()
@@ -3222,7 +3333,9 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True,
     # ── تنظيف الذاكرة بعد المعالجة الثقيلة ──────────────────────────────
     _subphase_timings["ledger_finalize"] = round(_perf_counter() - _stage_started, 4)
     _stage_started = _perf_counter()
+    _memory_checkpoint("before_result_materialization", result_rows=int(len(results)))
     _out = pd.DataFrame(results)
+    _memory_checkpoint("after_result_materialization", result_rows=int(len(_out)))
     del results
     del indices
     del pending

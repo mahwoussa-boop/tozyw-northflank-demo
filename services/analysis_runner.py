@@ -26,6 +26,7 @@
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
@@ -49,6 +50,15 @@ _DEFAULT_ESTIMATE_SEC = 3000 # تقدير أول تشغيل بارد (~50 دقي
 
 _thread_lock = threading.Lock()
 _active_process: Optional[subprocess.Popen] = None
+
+
+def _cgroup_memory_bytes() -> Optional[int]:
+    """ذاكرة cgroup الحية إن كانت المنصة تدعمها؛ الغياب لا يعطّل التحليل."""
+    try:
+        with open("/sys/fs/cgroup/memory.current", "r", encoding="utf-8") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _spawn_flags() -> int:
@@ -202,6 +212,24 @@ def _analysis_job(upload_path: str, filename: str, run_id: str) -> None:
     t_start = time.time()
     stop_beat = threading.Event()
 
+    def _memory_sample(stage: str, **metadata: Any) -> None:
+        """يحفظ عيّنة ذاكرة محدودة للتشخيص؛ لا يغيّر التحليل ولا يحتفظ بالنتائج."""
+        sample: dict[str, Any] = {
+            "stage": str(stage),
+            "elapsed_sec": round(time.time() - t_start, 1),
+            "cgroup_memory_bytes": _cgroup_memory_bytes(),
+            **metadata,
+        }
+        previous = read_progress() or {}
+        samples = previous.get("matching_memory_samples")
+        history = list(samples) if isinstance(samples, list) else []
+        history.append(sample)
+        # حد ثابت: تكفي عينة البداية + كل 500 منتج + الذروات النهائية.
+        _write_progress({
+            "matching_memory_latest": sample,
+            "matching_memory_samples": history[-64:],
+        })
+
     def _beat() -> None:
         while not stop_beat.wait(_HEARTBEAT_SEC):
             _write_progress({})  # يلمس updated_at فقط (نبض حياة)
@@ -256,9 +284,42 @@ def _analysis_job(upload_path: str, filename: str, run_id: str) -> None:
             "matching", missing_rows=int(len(missing_df)),
             missing_capped=bool(mstats.get("capped")),
             missing_cap_limit=int(mstats.get("cap_limit", 0) or 0),
+            matching_memory_samples=[],
+            matching_memory_latest=None,
         )
-        sections, result, missing_clean, astats = run_pricing_analysis(
-            container, our_df, missing_df=missing_df,
+        _memory_sample(
+            "before_pricing_analysis",
+            catalog_rows=int(len(our_df)),
+            missing_rows=int(len(missing_df)),
+        )
+        # لا تحتاج المطابقة المفقودات حتى تعود نتائجها إلى bootstrap للتنقية.
+        # تفريغها في ملف مؤقت يقلل تداخلها مع كامل كتالوج المنافسين ولا يغيرها.
+        os.makedirs(_LOGS_DIR, exist_ok=True)
+        missing_spill_path = _LOGS_DIR / f"missing_spill_{run_id}.pkl"
+        missing_df.to_pickle(missing_spill_path)
+        missing_rows = int(len(missing_df))
+        del missing_df
+        gc.collect()
+        _memory_sample("after_missing_spill_release", missing_rows=missing_rows)
+        try:
+            sections, result, missing_clean, astats = run_pricing_analysis(
+                container,
+                our_df,
+                # التحليل المحروس هو بوابة إعادة حساب بارد؛ لا يجوز له
+                # استعادة pricing_cache حتى لو أُعيد بناؤه أثناء الإقلاع.
+                use_cache=False,
+                missing_df=None,
+                missing_spill_path=str(missing_spill_path),
+                memory_callback=_memory_sample,
+            )
+        finally:
+            try:
+                missing_spill_path.unlink()
+            except FileNotFoundError:
+                pass
+        _memory_sample(
+            "after_pricing_analysis",
+            result_total=int(getattr(result, "total", 0) or 0),
         )
         _write_progress({
             "matching_subphases_sec": dict(astats.get("matching_subphases_sec") or {}),

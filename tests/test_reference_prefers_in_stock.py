@@ -92,3 +92,128 @@ def test_unknown_availability_is_not_treated_as_out_of_stock(_avail):
                    best=cands[0], all_cands=cands)
     assert row["سعر_المنافس"] == 250.0
     assert row["ملاحظة_المرجع"] == ""
+
+
+def test_low_confidence_offer_stays_visible_but_never_controls_price(_avail):
+    """عرض 70% أرخص يبقى في الشريط، لكنه لا يحدد قرار السعر عند وجود 95%."""
+    high = _cand(_LIVE, 120.0, "مرجع مؤكد")
+    high["score"] = 95.0
+    low = _cand(_LIVE2, 50.0, "مرجع رمادي")
+    low["score"] = 70.0
+
+    row = eng._row("عطر تجريبي 100 مل", 100.0, "p1", "شانيل", 100, "edp", "",
+                   best=high, all_cands=[high, low])
+
+    assert row["سعر_المنافس"] == 120.0
+    assert row["نسبة_التطابق"] == 95.0
+    assert row["القرار"] == "🟢 سعر أقل"
+    assert row["ملاحظة_المرجع"] == "عروض منخفضة الثقة مستبعدة من مرجع السعر"
+    assert _LIVE2 in {c["product_url"] for c in row["جميع_المنافسين"]}
+
+
+def test_only_low_confidence_ai_match_is_forced_to_review(_avail):
+    """اختيار AI لمرشح رمادي لا يحوّله إلى توصية سعر آلية."""
+    low = _cand(_LIVE, 50.0, "مرشح AI رمادي")
+    low["score"] = 72.0
+
+    row = eng._row("عطر تجريبي 100 مل", 100.0, "p1", "شانيل", 100, "edp", "",
+                   best=low, src="gemini", all_cands=[low])
+
+    assert row["سعر_المنافس"] == 50.0
+    assert row["القرار"].startswith("⚠️ تحت المراجعة — مرجع منخفض الثقة")
+    assert row["ملاحظة_المرجع"] == "لا يوجد مرجع سعري مؤكد — تحت المراجعة"
+
+
+def test_high_fuzzy_flanker_is_not_a_pricing_reference(_avail):
+    """تشابه ≥85 لا يكفي إذا كان خط المنتج مختلفاً؛ النتيجة مراجعة لا تسعير."""
+    wrong_line = {
+        "name": "عطر فرنش افينيو اكسيس او دو بارفيوم 100مل",
+        "score": 92.0,
+        "price": 90.0,
+        "product_id": "axis-100",
+        "brand": "فرنش افينيو",
+        "size": 100,
+        "type": "EDP",
+        "gender": "",
+        "competitor": "مرجع فلانكر مختلف",
+        "product_url": _LIVE,
+    }
+    row = eng._row("عطر فرنش افينيو شايوس او دو بارفيوم 100مل", 129.0, "p1",
+                   "فرنش افينيو", 100, "EDP", "", best=wrong_line,
+                   all_cands=[wrong_line])
+
+    assert row["القرار"].startswith("⚠️ تحت المراجعة — مرجع منخفض الثقة")
+    assert row["ملاحظة_المرجع"] == "لا يوجد مرجع سعري مؤكد — تحت المراجعة"
+
+
+def test_confirmed_same_line_offer_remains_eligible_for_pricing(_avail):
+    """الحارس لا يمنع مرجعاً مؤكدًا مطابقاً في الاسم/الخط/الحجم/التركيز."""
+    exact = {
+        "name": "عطر فرنش افينيو شايوس او دو بارفيوم 100مل",
+        "score": 96.0,
+        "price": 110.0,
+        "product_id": "chaos-100",
+        "brand": "فرنش افينيو",
+        "size": 100,
+        "type": "EDP",
+        "gender": "",
+        "competitor": "مرجع مطابق",
+        "product_url": _LIVE,
+    }
+    row = eng._row("عطر فرنش افينيو شايوس او دو بارفيوم 100مل", 129.0, "p1",
+                   "فرنش افينيو", 100, "EDP", "", best=exact, all_cands=[exact])
+
+    assert row["سعر_المنافس"] == 110.0
+    assert row["القرار"] == "🔴 سعر أعلى"
+    assert row["ملاحظة_المرجع"] == ""
+
+
+def _named_cand(name: str, score: float = 96.0, price: float = 110.0) -> dict:
+    return {
+        "name": name, "score": score, "price": price,
+        "product_id": "named-ref", "brand": "دو", "size": 100, "type": "EDT",
+        "gender": "", "competitor": "مرجع اختبار", "product_url": _LIVE,
+    }
+
+
+def test_different_molecule_version_is_not_a_pricing_reference(_avail):
+    """Molecule 03 يجب ألا يسعّر من Escentric 03 رغم التشابه النصي العالي."""
+    wrong = _named_cand("عطر إسكينتريك موليكيولز إسكينتريك 03 او دو تواليت للجنسين 100 مل", 94.8)
+    row = eng._row(
+        "عطر إسكينتريك موليكيولز موليكيول 03 أو دو تواليت 100 مل",
+        129.0, "p-molecule-03", "دو", 100, "EDT", "", best=wrong, all_cands=[wrong],
+    )
+    assert row["القرار"].startswith("⚠️ تحت المراجعة")
+    assert row["ملاحظة_المرجع"] == "لا يوجد مرجع سعري مؤكد — تحت المراجعة"
+
+
+def test_different_escentric_version_is_not_a_pricing_reference(_avail):
+    """Escentric 05 يجب ألا يسعّر من Escentric 03."""
+    wrong = _named_cand("عطر إسكينتريك موليكيولز إسكينتريك 03 او دو تواليت للجنسين 100 مل", 90.0)
+    row = eng._row(
+        "عطر اسنترك موليكيولز اسنتريك 05 أو دو تواليت 100 مل",
+        129.0, "p-escentric-05", "دو", 100, "EDT", "", best=wrong, all_cands=[wrong],
+    )
+    assert row["القرار"].startswith("⚠️ تحت المراجعة")
+
+
+def test_missing_competitor_product_line_is_not_a_pricing_reference(_avail):
+    """مرجع بلا خط منتج لا يمر تلقائياً لمنتج ذي خط معروف."""
+    wrong = _named_cand("عطر جيرلان هوم - 100 مل", 88.6, 90.0)
+    wrong["brand"] = "Guerlain"
+    row = eng._row(
+        "عطر جيرلان لو هوم أيديال أو دو كولون 100مل",
+        129.0, "p-guerlain", "Guerlain", 100, "EDC", "", best=wrong, all_cands=[wrong],
+    )
+    assert row["القرار"].startswith("⚠️ تحت المراجعة")
+
+
+def test_same_escentric_version_remains_eligible(_avail):
+    """Escentric 03 المطابق يبقى مؤهلاً بعد تشديد البوابة."""
+    exact = _named_cand("عطر إسكينتريك موليكيولز إسكينتريك 03 او دو تواليت للجنسين 100 مل", 96.0, 110.0)
+    row = eng._row(
+        "عطر إسكينتريك موليكيولز إسكينتريك 03 أو دو تواليت 100 مل",
+        129.0, "p-escentric-03", "دو", 100, "EDT", "", best=exact, all_cands=[exact],
+    )
+    assert row["سعر_المنافس"] == 110.0
+    assert row["القرار"] == "🔴 سعر أعلى"

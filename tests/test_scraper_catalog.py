@@ -196,3 +196,108 @@ def test_list_unlinked(tmp_path) -> None:
     names = {u["name"] for u in unlinked}
     assert names == {"بلا معرّف", "بلا معرّف 2"}      # المرتبط مُستبعد
     assert len(svc.list_competitors()) == 1            # المرتبط فقط في القائمة الأساسية
+
+
+def test_legacy_database_source_with_mahally_url_is_recovered_in_memory(tmp_path) -> None:
+    """سجل قديم يستعيد Mahally من الرابط فقط ولا يعيد كتابة JSON."""
+    import json
+
+    path = tmp_path / "competitors.json"
+    path.write_text(json.dumps([{
+        "name": "متجر Mahally قديم",
+        "store_url": "https://mahally.com/stores/123456/",
+        "mahally_store_id": None,
+        "source": "pricing_v18.db",
+    }], ensure_ascii=False), encoding="utf-8")
+
+    listed = ScraperService(links_file=path).list_competitors()
+
+    assert [(c.source, c.mahally_store_id) for c in listed] == [("mahally", 123456)]
+    assert json.loads(path.read_text(encoding="utf-8"))[0]["source"] == "pricing_v18.db"
+
+
+def test_legacy_database_source_without_mahally_identifier_is_skipped(tmp_path, caplog) -> None:
+    """السجل الغامض لا يمرر إلى router ولا يُحوّل إلى Mahally بالتخمين."""
+    import json
+
+    path = tmp_path / "competitors.json"
+    path.write_text(json.dumps([{
+        "name": "متجر غامض",
+        "store_url": "https://example.com/shop",
+        "mahally_store_id": None,
+        "source": "/data/pricing_v18.db",
+    }], ensure_ascii=False), encoding="utf-8")
+
+    assert ScraperService(links_file=path).list_competitors() == []
+    assert "legacy_source_ambiguous" in caplog.text
+
+
+def test_supported_source_is_not_changed_by_legacy_recovery(tmp_path) -> None:
+    """المصدر المدعوم يحتفظ بقيمته الحالية حتى إذا لم يحمل معرّف Mahally."""
+    import json
+
+    path = tmp_path / "competitors.json"
+    path.write_text(json.dumps([{
+        "name": "متجر Noon",
+        "store_url": "https://www.noon.com/saudi-en/",
+        "mahally_store_id": None,
+        "source": "noon",
+    }], ensure_ascii=False), encoding="utf-8")
+
+    listed = ScraperService(links_file=path).list_competitors()
+    assert [(c.source, c.mahally_store_id) for c in listed] == [("noon", 0)]
+
+
+def test_unknown_source_fails_safely_without_normalization(tmp_path, caplog) -> None:
+    """مصدر مجهول يبقى مجهولاً ثم يعيد router صفراً بلا شبكة أو تخمين."""
+    import json
+
+    path = tmp_path / "competitors.json"
+    path.write_text(json.dumps([{
+        "name": "متجر مجهول",
+        "store_url": "https://example.com/unknown",
+        "mahally_store_id": None,
+        "source": "unknown_marketplace",
+    }], ensure_ascii=False), encoding="utf-8")
+
+    service = ScraperService(links_file=path)
+    listed = service.list_competitors()
+    assert len(listed) == 1 and listed[0].source == "unknown_marketplace"
+    assert service.scrape_and_save(listed[0]) == 0
+    assert "Unsupported source" in caplog.text
+
+
+def test_legacy_database_source_rejects_non_mahally_host(tmp_path, caplog) -> None:
+    """مسار /stores/ في نطاق غير Mahally لا يكفي للاسترداد."""
+    import json
+
+    path = tmp_path / "competitors.json"
+    path.write_text(json.dumps([{
+        "name": "نطاق غير موثوق",
+        "store_url": "https://example.com/stores/123456",
+        # حتى المعرّف القديم لا يعتمد عندما لا يثبت نطاق الرابط Mahally.
+        "mahally_store_id": 777,
+        "source": "pricing_v18.db",
+    }], ensure_ascii=False), encoding="utf-8")
+
+    assert ScraperService(links_file=path).list_competitors() == []
+    assert "legacy_source_ambiguous" in caplog.text
+
+
+@pytest.mark.parametrize("source_value", [None, ""])
+def test_explicit_empty_source_is_not_inferred_as_mahally(tmp_path, source_value) -> None:
+    """وجود source بقيمة None أو فارغة لا يرث الافتراضي ولا يطبع المصدر."""
+    import json
+
+    path = tmp_path / "competitors.json"
+    path.write_text(json.dumps([{
+        "name": "مصدر فارغ",
+        "store_url": "https://mahally.com/stores/123456/",
+        "mahally_store_id": None,
+        "source": source_value,
+    }], ensure_ascii=False), encoding="utf-8")
+
+    listed = ScraperService(links_file=path).list_competitors()
+    assert len(listed) == 1
+    assert listed[0].source == ""
+    assert listed[0].mahally_store_id == 0
